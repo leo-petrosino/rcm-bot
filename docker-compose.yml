@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  rcm-bot:
+    build: .
+    container_name: rcm-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
