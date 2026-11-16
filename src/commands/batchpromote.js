@@ -1,18 +1,41 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const { getRankByLevel, getRankByName } = require('../../config');
-const { getMemberFromIndex, readSheet, appendRow, updateRow, deleteRow, updatePersonnelIndex } = require('../utils/sheets');
+const { SlashCommandBuilder } = require('discord.js');
+const { getRankByName, getRankByLevel } = require('../../config');
+const { getMemberFromIndex, updatePersonnelIndex } = require('../utils/sheets');
 const { getMemberRank, canBatchPromote } = require('../utils/permissions');
 const { setRank } = require('../utils/roblox');
 const { logAudit } = require('../utils/audit');
+const { RcmEmbed } = require('../utils/embeds');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('batchpromote')
-    .setDescription('Promote multiple members at once (Captain+)')
-    .addStringOption(option => option.setName('users').setDescription('Space-separated @mentions').setRequired(true))
-    .addStringOption(option => option.setName('rank').setDescription('Exact rank name to promote to').setRequired(true))
-    .addStringOption(option => option.setName('reason').setDescription('Reason for batch promotion').setRequired(true)),
-  cooldown: 30000,
+    .setDescription('Mass promote multiple members simultaneously (Captain+)')
+    .addStringOption(option =>
+      option.setName('users')
+        .setDescription('Space-separated @mentions of personnel')
+        .setRequired(true)
+    )
+    .addStringOption(option =>
+      option.setName('rank')
+        .setDescription('Target rank to promote to')
+        .setRequired(true)
+        .setAutocomplete(true)
+    )
+    .addStringOption(option =>
+      option.setName('reason').setDescription('Promotion ceremony rationale').setRequired(true)
+    ),
+  cooldown: 15000,
+
+  async autocomplete(interaction) {
+    const focusedValue = interaction.options.getFocused().toLowerCase();
+    const { RUNTIME_CACHE } = require('../../config');
+    const filtered = RUNTIME_CACHE.ranks.filter(
+      r => r.name.toLowerCase().includes(focusedValue) || r.abbr.toLowerCase().includes(focusedValue)
+    );
+    await interaction.respond(
+      filtered.slice(0, 25).map(r => ({ name: `${r.name} (${r.abbr})`, value: r.name }))
+    );
+  },
 
   async execute(interaction) {
     await interaction.deferReply();
@@ -25,163 +48,135 @@ module.exports = {
     const executorRank = getMemberRank(executorMember);
 
     if (!canBatchPromote(executorRank)) {
-      return interaction.editReply({ content: 'You do not have authority to batch promote.' });
+      return interaction.editReply({
+        content: '❌ You do not have authority to execute batch promotions (Requires Captain+).',
+      });
     }
 
-    const newRank = getRankByName(rankName);
-    if (!newRank) {
-      return interaction.editReply({ content: `Rank "${rankName}" not found. Use the exact rank name.` });
+    const targetRank = getRankByName(rankName);
+    if (!targetRank) {
+      return interaction.editReply({ content: `❌ Target rank \`${rankName}\` not found.` });
     }
 
-    // Parse mentions
+    if (targetRank.level >= executorRank.level) {
+      return interaction.editReply({
+        content: `❌ You cannot batch promote members to a rank equal to or above your own (**${executorRank.name}**).`,
+      });
+    }
+
+    // Extract user mentions
     const mentionRegex = /<@!?(\d+)>/g;
     const matches = [...usersStr.matchAll(mentionRegex)];
     const userIds = [...new Set(matches.map(m => m[1]))];
 
     if (userIds.length === 0) {
-      return interaction.editReply({ content: 'No valid mentions found. Use @User @User format.' });
+      return interaction.editReply({
+        content: '❌ No valid user mentions found. Format: `/batchpromote users:@Member1 @Member2 rank:Private reason:...`',
+      });
     }
 
     if (userIds.length > 20) {
-      return interaction.editReply({ content: 'Maximum 20 members per batch promotion.' });
+      return interaction.editReply({ content: '⚠️ Maximum limit is 20 personnel per batch operation.' });
     }
 
-    const results = { success: [], failed: [] };
+    const results = { successful: [], failed: [] };
+    const now = new Date().toISOString();
 
     for (const userId of userIds) {
       try {
         const targetData = await getMemberFromIndex(userId);
         if (!targetData) {
-          results.failed.push({ id: userId, reason: 'Not in database' });
+          results.failed.push({ id: userId, reason: 'Unverified / Not in database' });
           continue;
         }
 
-        const currentLevel = parseInt(targetData.Rank_Level);
-        if (currentLevel + 1 !== newRank.level) {
-          results.failed.push({ id: userId, reason: `Current rank is not one below ${newRank.name}` });
+        const strikes = parseInt(targetData.Strike_Count || '0', 10);
+        if (strikes >= 3) {
+          results.failed.push({ id: userId, reason: `Active disciplinary hold (${strikes} strikes)` });
           continue;
         }
 
-        if (newRank.level >= executorRank.level) {
-          results.failed.push({ id: userId, reason: 'Promotion exceeds your authority' });
+        const currentLevel = parseInt(targetData.Rank_Level, 10);
+        if (currentLevel + 1 !== targetRank.level) {
+          results.failed.push({
+            id: userId,
+            reason: `Current level ${currentLevel} is not immediately below target rank ${targetRank.name}`,
+          });
           continue;
         }
 
-        // Roblox
+        // Roblox group rank update
         try {
-          await setRank(targetData.Roblox_ID, newRank.name);
+          await setRank(targetData.Roblox_ID, targetRank.name);
         } catch (err) {
-          results.failed.push({ id: userId, reason: 'Roblox API failed' });
+          results.failed.push({ id: userId, reason: `Roblox error: ${err.message}` });
           continue;
         }
 
-        // Discord role
+        // Discord role update
         try {
           const targetMember = await interaction.guild.members.fetch(userId);
           const oldRank = getRankByLevel(currentLevel);
-          if (oldRank) await targetMember.roles.remove(oldRank.roleId);
-          await targetMember.roles.add(newRank.roleId);
+          if (oldRank?.roleId && targetMember.roles.cache.has(oldRank.roleId)) {
+            await targetMember.roles.remove(oldRank.roleId);
+          }
+          if (targetRank.roleId) {
+            await targetMember.roles.add(targetRank.roleId);
+          }
         } catch (err) {
-          console.error('Discord role failed for', userId);
+          console.warn('[BatchPromote] Discord role warning:', err.message);
         }
 
-        // Cross-sheet or in-place update
-        const oldSheet = targetData.Current_Sheet;
-        const now = new Date().toISOString();
-
-        if (oldSheet !== newRank.sheet) {
-          const oldRows = await readSheet(oldSheet);
-          const oldHeaders = oldRows[0];
-          const discordIdx = oldHeaders.indexOf('Discord_ID');
-          let oldRowData = null;
-          let oldRowIndex = -1;
-          for (let i = 1; i < oldRows.length; i++) {
-            if (oldRows[i][discordIdx] === userId) {
-              oldRowData = oldRows[i];
-              oldRowIndex = i + 1;
-              break;
-            }
-          }
-          if (oldRowData) {
-            await appendRow(newRank.sheet, [
-              userId, targetData.Roblox_ID, targetData.Roblox_Username,
-              newRank.name, String(newRank.level),
-              oldRowData[oldHeaders.indexOf('Branch')] || '',
-              oldRowData[oldHeaders.indexOf('Join_Date')] || '',
-              now,
-              oldRowData[oldHeaders.indexOf('Strike_Count')] || '0',
-              oldRowData[oldHeaders.indexOf('Total_Strikes')] || '0',
-              'Active', '', '',
-            ]);
-            await deleteRow(oldSheet, oldRowIndex);
-          }
-        } else {
-          const rows = await readSheet(oldSheet);
-          const headers = rows[0];
-          const discordIdx = headers.indexOf('Discord_ID');
-          for (let i = 1; i < rows.length; i++) {
-            if (rows[i][discordIdx] === userId) {
-              const row = rows[i];
-              row[headers.indexOf('Rank')] = newRank.name;
-              row[headers.indexOf('Rank_Level')] = String(newRank.level);
-              row[headers.indexOf('Last_Promotion')] = now;
-              await updateRow(oldSheet, i + 1, row);
-              break;
-            }
-          }
-        }
-
+        // Sheet update
         await updatePersonnelIndex(userId, {
-          Current_Rank: newRank.name,
-          Rank_Level: String(newRank.level),
-          Class: newRank.class,
-          Current_Sheet: newRank.sheet,
+          Current_Rank: targetRank.name,
+          Rank_Level: String(targetRank.level),
+          Class: targetRank.class,
           Last_Updated: now,
         });
 
+        // Audit log
         await logAudit({
           action: 'PROMOTE',
           targetDiscord: userId,
           targetRoblox: targetData.Roblox_ID,
-          oldRank: getRankByLevel(currentLevel)?.name || '',
-          newRank: newRank.name,
+          oldRank: targetData.Current_Rank,
+          newRank: targetRank.name,
           executorDiscord: interaction.user.id,
           executorRank: executorRank.name,
-          reason: `[BATCH] ${reason}`,
+          reason: `[MASS CEREMONY] ${reason}`,
           robloxChanged: true,
+          client: interaction.client,
         });
 
-        results.success.push(userId);
+        results.successful.push({ id: userId, username: targetData.Roblox_Username });
       } catch (err) {
-        console.error('Batch promote error for', userId, err);
-        results.failed.push({ id: userId, reason: 'Unexpected error' });
+        results.failed.push({ id: userId, reason: err.message });
       }
     }
 
-    const embed = new EmbedBuilder()
-      .setTitle('Batch Promotion Results')
-      .setColor(results.failed.length === 0 ? 0x00AA00 : 0xFFAA00)
+    const embed = RcmEmbed.base('MASS PROMOTION CEREMONY REPORT')
+      .setDescription(
+        `Batch promotion directive enacted by <@${interaction.user.id}> (**${executorRank.name}**).\n` +
+        `Target Rank: **${targetRank.name}** (\`${targetRank.abbr}\`)\n` +
+        `Rationale: *"${reason}"*`
+      )
       .addFields(
-        { name: 'Target Rank', value: newRank.name, inline: true },
-        { name: 'Successful', value: String(results.success.length), inline: true },
-        { name: 'Failed', value: String(results.failed.length), inline: true },
+        {
+          name: `✅ Successfully Promoted (${results.successful.length})`,
+          value: results.successful.length > 0
+            ? results.successful.map(s => `• <@${s.id}> (\`${s.username}\`)`).join('\n')
+            : '*None*',
+          inline: false,
+        },
+        {
+          name: `❌ Failed / Skipped (${results.failed.length})`,
+          value: results.failed.length > 0
+            ? results.failed.map(f => `• <@${f.id}>: *${f.reason}*`).join('\n')
+            : '*None*',
+          inline: false,
+        }
       );
-
-    if (results.success.length > 0) {
-      embed.addFields({
-        name: 'Promoted',
-        value: results.success.map(id => `<@${id}>`).join(' ') || 'None',
-        inline: false,
-      });
-    }
-
-    if (results.failed.length > 0) {
-      embed.addFields({
-        name: 'Failed',
-        value: results.failed.map(f => `<@${f.id}>: ${f.reason}`).join('\n') || 'None',
-        inline: false,
-      });
-    }
 
     await interaction.editReply({ embeds: [embed] });
   },

@@ -1,102 +1,64 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-const { Client, Collection, GatewayIntentBits } = require('discord.js');
-const noblox = require('noblox.js');
+const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
   ],
+  partials: [Partials.GuildMember, Partials.User],
 });
 
 client.commands = new Collection();
 client.cooldowns = new Collection();
 
-// Load commands
+// 1. Load Command Modules
 const commandsPath = path.join(__dirname, 'src', 'commands');
-const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
-
-for (const file of commandFiles) {
-  const filePath = path.join(commandsPath, file);
-  const command = require(filePath);
-  if ('data' in command && 'execute' in command) {
-    client.commands.set(command.data.name, command);
-  } else {
-    console.log(`[WARNING] Command at ${filePath} is missing data or execute.`);
+if (fs.existsSync(commandsPath)) {
+  const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+  for (const file of commandFiles) {
+    const filePath = path.join(commandsPath, file);
+    const command = require(filePath);
+    if ('data' in command && 'execute' in command) {
+      client.commands.set(command.data.name, command);
+    } else {
+      console.warn(`[WARNING] Command at ${filePath} is missing required "data" or "execute" export.`);
+    }
   }
+  console.log(`[Commands] Loaded ${client.commands.size} slash commands.`);
 }
 
-// Load events
+// 2. Load Event Handlers
 const eventsPath = path.join(__dirname, 'src', 'events');
 if (fs.existsSync(eventsPath)) {
   const eventFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'));
   for (const file of eventFiles) {
-    const event = require(path.join(eventsPath, file));
+    const filePath = path.join(eventsPath, file);
+    const event = require(filePath);
     if (event.once) {
       client.once(event.name, (...args) => event.execute(...args, client));
     } else {
       client.on(event.name, (...args) => event.execute(...args, client));
     }
   }
+  console.log(`[Events] Loaded ${eventFiles.length} event listeners.`);
 }
 
-// Login to Roblox
-async function initRoblox() {
-  try {
-    await noblox.setCookie(process.env.ROBLOX_COOKIE);
-    console.log('[Roblox] Logged in successfully');
-  } catch (err) {
-    console.error('[Roblox] Failed to login:', err.message);
-    console.error('Promote/demote commands will fail until this is fixed.');
-  }
-}
-
-client.once('ready', async () => {
-  console.log(`[Discord] Logged in as ${client.user.tag}`);
-  await initRoblox();
+// 3. Process Error Guards
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Unhandled Rejection]', reason);
 });
 
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-
-  const command = client.commands.get(interaction.commandName);
-  if (!command) return;
-
-  // Cooldown check
-  const { cooldowns } = client;
-  if (!cooldowns.has(command.data.name)) {
-    cooldowns.set(command.data.name, new Collection());
-  }
-
-  const now = Date.now();
-  const timestamps = cooldowns.get(command.data.name);
-  const defaultCooldown = 5000;
-  const cooldownAmount = (command.cooldown ?? defaultCooldown);
-
-  if (timestamps.has(interaction.user.id)) {
-    const expirationTime = timestamps.get(interaction.user.id) + cooldownAmount;
-    if (now < expirationTime) {
-      const expiredTimestamp = Math.round(expirationTime / 1000);
-      return interaction.reply({ content: `Please wait, you are on cooldown for \`\${command.data.name}\`\. You can use it again <t:\${expiredTimestamp}:R>.`, ephemeral: true });
-    }
-  }
-
-  timestamps.set(interaction.user.id, now);
-  setTimeout(() => timestamps.delete(interaction.user.id), cooldownAmount);
-
-  try {
-    await command.execute(interaction);
-  } catch (error) {
-    console.error(error);
-    const reply = { content: 'There was an error executing this command.', ephemeral: true };
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp(reply);
-    } else {
-      await interaction.reply(reply);
-    }
-  }
+process.on('uncaughtException', error => {
+  console.error('[Uncaught Exception]', error);
 });
 
-client.login(process.env.DISCORD_TOKEN);
+// 4. Start Discord Bot
+client.login(process.env.DISCORD_TOKEN).catch(err => {
+  console.error('[Discord] Authentication failed:', err.message);
+  process.exit(1);
+});
+
+module.exports = client;

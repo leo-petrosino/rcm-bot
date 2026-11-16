@@ -1,74 +1,65 @@
-const { getMemberFromIndex, readSheet, appendRow, deleteRow, updatePersonnelIndex } = require('../utils/sheets');
+const { getMemberFromIndex, appendRow, updatePersonnelIndex } = require('../utils/sheets');
 const { logAudit } = require('../utils/audit');
+const { GUILD_ID } = require('../../config');
 
 module.exports = {
   name: 'guildMemberRemove',
   once: false,
   async execute(member, client) {
-    if (member.guild.id !== process.env.GUILD_ID) return;
+    if (member.guild.id !== (process.env.GUILD_ID || GUILD_ID)) return;
 
     const targetData = await getMemberFromIndex(member.id);
     if (!targetData) return;
-    if (targetData.Status === 'Discharged' || targetData.Status === 'LWA') return;
 
-    const oldSheet = targetData.Current_Sheet;
+    // Skip if already formally discharged, blacklisted, or already marked LWA
+    if (
+      targetData.Status === 'Discharged' ||
+      targetData.Status === 'LWA' ||
+      targetData.Status === 'Blacklisted'
+    ) {
+      return;
+    }
+
     const now = new Date().toISOString();
 
     try {
-      const oldRows = await readSheet(oldSheet);
-      const oldHeaders = oldRows[0];
-      const discordIdx = oldHeaders.indexOf('Discord_ID');
-      let oldRowData = null;
-      let oldRowIndex = -1;
+      // Record in LWA tab
+      await appendRow('LWA', [
+        member.id,
+        targetData.Roblox_ID || '',
+        targetData.Roblox_Username || '',
+        targetData.Current_Rank || 'Cadet',
+        targetData.Rank_Level || '1',
+        targetData.Regiment || 'None',
+        targetData.Join_Date || '',
+        'LWA',
+        now,
+        'Departed Discord server without official discharge decree',
+      ]);
 
-      for (let i = 1; i < oldRows.length; i++) {
-        if (oldRows[i][discordIdx] === member.id) {
-          oldRowData = oldRows[i];
-          oldRowIndex = i + 1;
-          break;
-        }
-      }
+      // Update Personnel_Index
+      await updatePersonnelIndex(member.id, {
+        Status: 'LWA',
+        Last_Updated: now,
+      });
 
-      if (oldRowData) {
-        await appendRow('LWA', [
-          member.id,
-          targetData.Roblox_ID,
-          targetData.Roblox_Username,
-          targetData.Current_Rank,
-          targetData.Rank_Level,
-          oldRowData[oldHeaders.indexOf('Branch')] || '',
-          oldRowData[oldHeaders.indexOf('Join_Date')] || '',
-          oldRowData[oldHeaders.indexOf('Last_Promotion')] || '',
-          oldRowData[oldHeaders.indexOf('Strike_Count')] || '0',
-          oldRowData[oldHeaders.indexOf('Total_Strikes')] || '0',
-          'LWA',
-          now,
-          'Left Discord server without discharge',
-        ]);
-        await deleteRow(oldSheet, oldRowIndex);
-      }
+      // Log Audit
+      await logAudit({
+        action: 'LWA',
+        targetDiscord: member.id,
+        targetRoblox: targetData.Roblox_ID,
+        oldRank: targetData.Current_Rank,
+        newRank: 'LWA (Deserter)',
+        executorDiscord: 'SYSTEM',
+        executorRank: 'SYSTEM',
+        reason: 'Member severed Discord membership without authorization (LWA)',
+        robloxChanged: false,
+        client,
+      });
+
+      console.log(`[LWA Watchdog] Flagged ${member.user.tag} (${member.id}) as Left Without Discharge (LWA).`);
     } catch (err) {
-      console.error('LWA move failed:', err);
+      console.error('[LWA Watchdog] Error handling departing member:', err.message);
     }
-
-    await updatePersonnelIndex(member.id, {
-      Status: 'LWA',
-      Current_Sheet: 'LWA',
-      Last_Updated: now,
-    });
-
-    await logAudit({
-      action: 'LWA',
-      targetDiscord: member.id,
-      targetRoblox: targetData.Roblox_ID,
-      oldRank: targetData.Current_Rank,
-      newRank: 'LWA',
-      executorDiscord: 'SYSTEM',
-      executorRank: 'SYSTEM',
-      reason: 'Member left Discord server',
-      robloxChanged: false,
-    });
-
-    console.log(`[LWA] ${member.user.tag} (${member.id}) flagged as Left Without Discharge`);
   },
 };

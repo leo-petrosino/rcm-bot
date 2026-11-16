@@ -1,25 +1,31 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { getMemberFromIndex, readSheet, appendRow, deleteRow, updatePersonnelIndex } = require('../utils/sheets');
+const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { getMemberFromIndex, appendRow, updatePersonnelIndex } = require('../utils/sheets');
 const { getMemberRank, canDischarge } = require('../utils/permissions');
 const { setRank } = require('../utils/roblox');
 const { logAudit } = require('../utils/audit');
 const { RANKS } = require('../../config');
+const { RcmEmbed } = require('../utils/embeds');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('discharge')
-    .setDescription('Discharge a member from RCM')
-    .addUserOption(option => option.setName('user').setDescription('Member to discharge').setRequired(true))
+    .setDescription('Formally discharge a member from the Royal Canadian Military (Captain+)')
+    .addUserOption(option =>
+      option.setName('user').setDescription('Service member to discharge').setRequired(true)
+    )
     .addStringOption(option =>
       option.setName('type')
-        .setDescription('Discharge type')
+        .setDescription('Official classification of discharge')
         .setRequired(true)
         .addChoices(
-          { name: 'Honorable', value: 'Honorable' },
-          { name: 'General', value: 'General' },
-          { name: 'Dishonorable', value: 'Dishonorable' },
-        ))
-    .addStringOption(option => option.setName('reason').setDescription('Reason for discharge (min 30 chars)').setRequired(true)),
+          { name: '🎖️ Honorable Discharge', value: 'Honorable' },
+          { name: '📋 General Discharge (Under Honorable Conditions)', value: 'General' },
+          { name: '⚖️ Dishonorable Discharge (Administrative Separation)', value: 'Dishonorable' }
+        )
+    )
+    .addStringOption(option =>
+      option.setName('reason').setDescription('Discharge rationale (min 25 characters)').setRequired(true)
+    ),
   cooldown: 10000,
 
   async execute(interaction) {
@@ -27,8 +33,11 @@ module.exports = {
     const type = interaction.options.getString('type');
     const reason = interaction.options.getString('reason');
 
-    if (reason.length < 30) {
-      return interaction.reply({ content: 'Reason must be at least 30 characters.', ephemeral: true });
+    if (reason.length < 25) {
+      return interaction.reply({
+        content: '⚠️ Official separation orders require a comprehensive rationale of at least 25 characters.',
+        ephemeral: true,
+      });
     }
 
     const executorMember = await interaction.guild.members.fetch(interaction.user.id);
@@ -36,101 +45,101 @@ module.exports = {
 
     const targetData = await getMemberFromIndex(targetUser.id);
     if (!targetData) {
-      return interaction.reply({ content: 'Target is not in the database.', ephemeral: true });
+      return interaction.reply({ content: '❌ Target is not indexed in the database.', ephemeral: true });
     }
 
-    const targetLevel = parseInt(targetData.Rank_Level);
-
+    const targetLevel = parseInt(targetData.Rank_Level, 10);
     if (!canDischarge(executorRank, targetLevel)) {
-      return interaction.reply({ content: 'You do not have authority to discharge this member.', ephemeral: true });
+      return interaction.reply({
+        content: '❌ You do not have authority to discharge this service member.',
+        ephemeral: true,
+      });
     }
 
+    // Interactive button row
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('confirm_discharge').setLabel('Confirm Discharge').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('cancel_discharge').setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('confirm_discharge')
+        .setLabel('Confirm Administrative Separation')
+        .setStyle(type === 'Dishonorable' ? ButtonStyle.Danger : ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('cancel_discharge')
+        .setLabel('Cancel Order')
+        .setStyle(ButtonStyle.Secondary)
     );
 
-    const msg = await interaction.reply({
-      content: `Are you sure you want to discharge <@${targetUser.id}> (${targetData.Current_Rank})?\n**Type:** ${type}\n**Reason:** ${reason}`,
+    const promptEmbed = RcmEmbed.warning('SEPARATION PROCEEDINGS INITIATED')
+      .setDescription(
+        `Are you sure you wish to issue an official **${type} Discharge** for <@${targetUser.id}> (**${targetData.Roblox_Username}**)?\n\n` +
+        `• **Current Rank:** ${targetData.Current_Rank}\n` +
+        `• **Regiment:** ${targetData.Regiment || 'Unassigned'}\n` +
+        `• **Rationale:** *"${reason}"*`
+      );
+
+    const responseMsg = await interaction.reply({
+      embeds: [promptEmbed],
       components: [row],
       ephemeral: true,
     });
 
     const filter = i => i.user.id === interaction.user.id;
     try {
-      const confirmation = await msg.awaitMessageComponent({ filter, time: 30000 });
+      const confirmation = await responseMsg.awaitMessageComponent({ filter, time: 30000 });
 
       if (confirmation.customId === 'cancel_discharge') {
-        return confirmation.update({ content: 'Discharge cancelled.', components: [] });
+        return confirmation.update({
+          content: '✅ Discharge proceedings cancelled. No changes made.',
+          embeds: [],
+          components: [],
+        });
       }
 
       await confirmation.deferUpdate();
 
-      // Try to remove from Roblox group
+      // 1. Roblox group derank to Guest
+      let robloxSuccess = false;
       try {
         await setRank(targetData.Roblox_ID, 'Guest');
+        robloxSuccess = true;
       } catch (err) {
-        console.error('Roblox group removal failed:', err);
+        console.error('[Discharge] Roblox derank failed:', err.message);
       }
 
-      // Remove Discord roles
+      // 2. Remove Discord military roles
       try {
         const targetMember = await interaction.guild.members.fetch(targetUser.id);
-        for (const rank of RANKS) {
-          if (targetMember.roles.cache.has(rank.roleId)) {
-            await targetMember.roles.remove(rank.roleId);
+        for (const r of RANKS) {
+          if (r.roleId && targetMember.roles.cache.has(r.roleId)) {
+            await targetMember.roles.remove(r.roleId);
           }
         }
       } catch (err) {
-        console.error('Discord role removal failed:', err);
+        console.warn('[Discharge] Discord role strip warning:', err.message);
       }
 
-      // Move to Discharged sheet
-      const oldSheet = targetData.Current_Sheet;
       const now = new Date().toISOString();
 
-      try {
-        const oldRows = await readSheet(oldSheet);
-        const oldHeaders = oldRows[0];
-        const discordIdx = oldHeaders.indexOf('Discord_ID');
-        let oldRowData = null;
-        let oldRowIndex = -1;
-        for (let i = 1; i < oldRows.length; i++) {
-          if (oldRows[i][discordIdx] === targetUser.id) {
-            oldRowData = oldRows[i];
-            oldRowIndex = i + 1;
-            break;
-          }
-        }
+      // 3. Append to Discharged Sheet
+      await appendRow('Discharged', [
+        targetUser.id,
+        targetData.Roblox_ID,
+        targetData.Roblox_Username,
+        targetData.Current_Rank,
+        targetData.Rank_Level,
+        targetData.Regiment || 'None',
+        targetData.Join_Date || '',
+        type,
+        now,
+        reason,
+      ]);
 
-        if (oldRowData) {
-          await appendRow('Discharged', [
-            targetUser.id,
-            targetData.Roblox_ID,
-            targetData.Roblox_Username,
-            targetData.Current_Rank,
-            targetData.Rank_Level,
-            oldRowData[oldHeaders.indexOf('Branch')] || '',
-            oldRowData[oldHeaders.indexOf('Join_Date')] || '',
-            oldRowData[oldHeaders.indexOf('Last_Promotion')] || '',
-            oldRowData[oldHeaders.indexOf('Strike_Count')] || '0',
-            oldRowData[oldHeaders.indexOf('Total_Strikes')] || '0',
-            type,
-            now,
-            reason,
-          ]);
-          await deleteRow(oldSheet, oldRowIndex);
-        }
-      } catch (err) {
-        console.error('Move to Discharged sheet failed:', err);
-      }
-
+      // 4. Update Personnel_Index status
       await updatePersonnelIndex(targetUser.id, {
         Status: 'Discharged',
-        Current_Sheet: 'Discharged',
         Last_Updated: now,
       });
 
+      // 5. Log Audit
       await logAudit({
         action: 'DISCHARGE',
         targetDiscord: targetUser.id,
@@ -140,16 +149,31 @@ module.exports = {
         executorDiscord: interaction.user.id,
         executorRank: executorRank.name,
         reason,
-        robloxChanged: true,
+        robloxChanged: robloxSuccess,
+        client: interaction.client,
       });
+
+      const finalEmbed = RcmEmbed.danger(`OFFICIAL DISCHARGE • ${type.toUpperCase()}`)
+        .setDescription(`An official discharge decree has been executed for <@${targetUser.id}>.`)
+        .addFields(
+          { name: '🎖️ Former Rank', value: targetData.Current_Rank, inline: true },
+          { name: '📋 Separation Type', value: `\`${type} Discharge\``, inline: true },
+          { name: '👑 Discharging Officer', value: `<@${interaction.user.id}> (${executorRank.abbr})`, inline: true },
+          { name: '🌐 Roblox Status', value: robloxSuccess ? '✅ Group Rank Set to Guest' : '⚠️ Manual Derank Required', inline: true },
+          { name: '📜 Official Record Rationale', value: `*"${reason}"*`, inline: false },
+        );
 
       await confirmation.editReply({
-        content: `✅ <@${targetUser.id}> has been discharged.\n**Type:** ${type}\n**Reason:** ${reason}`,
+        content: null,
+        embeds: [finalEmbed],
         components: [],
       });
-
     } catch {
-      await interaction.editReply({ content: 'Discharge confirmation timed out.', components: [] });
+      await interaction.editReply({
+        content: '⏱️ Discharge confirmation timed out. Action cancelled.',
+        embeds: [],
+        components: [],
+      });
     }
   },
 };

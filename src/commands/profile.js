@@ -1,56 +1,114 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder } = require('discord.js');
 const { getMemberFromIndex, readSheet } = require('../utils/sheets');
+const { getRegimentById } = require('../../config');
+const { RcmEmbed } = require('../utils/embeds');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('profile')
-    .setDescription('View a member\'s service record')
-    .addUserOption(option => 
+    .setDescription("View an RCM service member's military dossier")
+    .addUserOption(option =>
       option.setName('user')
-        .setDescription('Member to lookup')
-        .setRequired(false)),
+        .setDescription('Member to inspect (defaults to yourself)')
+        .setRequired(false)
+    ),
 
   async execute(interaction) {
-    const target = interaction.options.getUser('user') || interaction.user;
-    const member = await getMemberFromIndex(target.id);
+    await interaction.deferReply();
+
+    const targetUser = interaction.options.getUser('user') || interaction.user;
+    const member = await getMemberFromIndex(targetUser.id);
 
     if (!member) {
-      return interaction.reply({ content: 'Member not found in database. They may need to `/verify` first.', ephemeral: true });
+      return interaction.editReply({
+        content: `❌ No service record found for <@${targetUser.id}>. They must link their account using \`/verify\`.`,
+      });
     }
 
-    // Get recent audit entries
+    // Resolve regiment
+    const regiment = getRegimentById(member.Regiment);
+    const regimentDisplay = regiment
+      ? `${regiment.emoji} **${regiment.name}** (\`${regiment.id}\`)`
+      : '*(Unassigned)*';
+
+    // Retrieve recent actions from Audit_Log
     const auditRows = await readSheet('Audit_Log');
-    let recentActions = 'None';
+    let recentActions = '• *No recent administrative entries*';
+
     if (auditRows.length > 1) {
       const headers = auditRows[0];
       const targetIdx = headers.indexOf('Target_Discord');
       const actionIdx = headers.indexOf('Action');
       const dateIdx = headers.indexOf('Timestamp');
-      const filtered = auditRows.slice(1).reverse().filter(r => r[targetIdx] === target.id).slice(0, 3);
-      if (filtered.length > 0) {
-        recentActions = filtered.map(r => {
-          const date = r[dateIdx] ? r[dateIdx].split('T')[0] : '?';
-          return `${r[actionIdx]} (${date})`;
-        }).join('\n');
+
+      const userAudits = auditRows
+        .slice(1)
+        .reverse()
+        .filter(r => r[targetIdx] === targetUser.id)
+        .slice(0, 3);
+
+      if (userAudits.length > 0) {
+        recentActions = userAudits
+          .map(r => {
+            const time = RcmEmbed.formatTimestamp(r[dateIdx], 'd');
+            return `• \`${r[actionIdx]}\` — ${time}`;
+          })
+          .join('\n');
       }
     }
 
-    const embed = new EmbedBuilder()
-      .setTitle(`${target.username} — Service Record`)
-      .setColor(0xC41E3A)
-      .addFields(
-        { name: 'Rank', value: member.Current_Rank || 'Unknown', inline: true },
-        { name: 'Class', value: member.Class || 'Unknown', inline: true },
-        { name: 'Status', value: member.Status || 'Unknown', inline: true },
-        { name: 'Roblox', value: `[${member.Roblox_Username}](https://www.roblox.com/users/${member.Roblox_ID}/profile)`, inline: false },
-        { name: 'Strikes', value: member.Strike_Count || '0', inline: true },
-        { name: 'Joined', value: member.Join_Date ? member.Join_Date.split('T')[0] : 'N/A', inline: true },
-        { name: 'Last Promotion', value: member.Last_Promotion ? member.Last_Promotion.split('T')[0] : 'N/A', inline: true },
-        { name: 'Recent Actions', value: recentActions, inline: false },
-      )
-      .setFooter({ text: `Discord ID: ${target.id}` })
-      .setTimestamp();
+    const strikes = parseInt(member.Strike_Count || '0', 10);
+    const strikeDisplay = strikes === 0
+      ? '🟢 `0 Strikes (Clean Record)`'
+      : strikes < 3
+      ? `🟡 \`${strikes} Active Strikes\``
+      : `🔴 \`${strikes} Active Strikes (FLAGGED)\``;
 
-    await interaction.reply({ embeds: [embed] });
+    const embed = RcmEmbed.base(`MILITARY SERVICE RECORD • ${member.Roblox_Username}`)
+      .setDescription(
+        `**Canadian Armed Forces Service Dossier**\n` +
+        `Current Status: ${RcmEmbed.statusBadge(member.Status)}\n` +
+        `Discord Identity: <@${targetUser.id}>`
+      )
+      .addFields(
+        {
+          name: '🎖️ Rank & Classification',
+          value: `**${member.Current_Rank}** (Level ${member.Rank_Level})\nClass: \`${member.Class || 'General Service'}\``,
+          inline: true,
+        },
+        {
+          name: '🛡️ Regimental Assignment',
+          value: regimentDisplay,
+          inline: true,
+        },
+        {
+          name: '🌐 Roblox Record',
+          value: `[${member.Roblox_Username}](https://www.roblox.com/users/${member.Roblox_ID}/profile)\nID: \`${member.Roblox_ID}\``,
+          inline: true,
+        },
+        {
+          name: '📅 Enlistment Date',
+          value: RcmEmbed.formatTimestamp(member.Join_Date, 'D') + ` (${RcmEmbed.formatTimestamp(member.Join_Date, 'R')})`,
+          inline: true,
+        },
+        {
+          name: '⚖️ Disciplinary Standing',
+          value: strikeDisplay,
+          inline: true,
+        },
+        {
+          name: '🕒 Last Service Update',
+          value: RcmEmbed.formatTimestamp(member.Last_Updated, 'R'),
+          inline: true,
+        },
+        {
+          name: '📜 Recent Record Actions',
+          value: recentActions,
+          inline: false,
+        }
+      )
+      .setThumbnail(`https://www.roblox.com/headshot-thumbnail/image?userId=${member.Roblox_ID}&width=150&height=150&format=png`);
+
+    await interaction.editReply({ embeds: [embed] });
   },
 };

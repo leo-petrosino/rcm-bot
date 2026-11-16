@@ -1,20 +1,31 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder } = require('discord.js');
 const { getMemberFromIndex, readSheet, updateRow, updatePersonnelIndex } = require('../utils/sheets');
 const { getMemberRank, canPardon } = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
+const { RcmEmbed } = require('../utils/embeds');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('pardon')
-    .setDescription('Pardon (remove) the most recent active strike from a member')
-    .addUserOption(option => option.setName('user').setDescription('Member to pardon').setRequired(true))
-    .addStringOption(option => option.setName('reason').setDescription('Reason for pardon').setRequired(true)),
+    .setDescription('Pardon an active disciplinary strike from a service member')
+    .addUserOption(option =>
+      option.setName('user').setDescription('Personnel being pardoned').setRequired(true)
+    )
+    .addStringOption(option =>
+      option.setName('strike_id')
+        .setDescription('Optional specific docket ID (e.g. STK-1). Defaults to most recent active strike')
+        .setRequired(false)
+    )
+    .addStringOption(option =>
+      option.setName('reason').setDescription('Pardon justification rationale').setRequired(true)
+    ),
   cooldown: 5000,
 
   async execute(interaction) {
     await interaction.deferReply();
 
     const targetUser = interaction.options.getUser('user');
+    const strikeIdQuery = interaction.options.getString('strike_id');
     const reason = interaction.options.getString('reason');
 
     const executorMember = await interaction.guild.members.fetch(interaction.user.id);
@@ -22,97 +33,106 @@ module.exports = {
 
     const targetData = await getMemberFromIndex(targetUser.id);
     if (!targetData) {
-      return interaction.editReply({ content: 'Target is not in the database.' });
+      return interaction.editReply({ content: '❌ Target is not indexed in the personnel database.' });
     }
 
-    // Find most recent active strike
     const strikeRows = await readSheet('Strike_Log');
     if (strikeRows.length <= 1) {
-      return interaction.editReply({ content: 'No strikes found for this member.' });
+      return interaction.editReply({ content: 'ℹ️ No strikes are currently recorded in the log.' });
     }
 
     const headers = strikeRows[0];
+    const idIdx = headers.indexOf('Strike_ID');
     const targetIdx = headers.indexOf('Target_Discord');
     const statusIdx = headers.indexOf('Status');
-    const issuedByIdx = headers.indexOf('Issued_By');
+    const issuerIdx = headers.indexOf('Issued_By');
+    const severityIdx = headers.indexOf('Severity');
 
-    let strikeRowIndex = -1;
     let strikeRow = null;
+    let strikeRowIndex = -1;
 
+    // Search for matching strike
     for (let i = strikeRows.length - 1; i >= 1; i--) {
-      if (strikeRows[i][targetIdx] === targetUser.id && strikeRows[i][statusIdx] === 'Active') {
-        strikeRow = strikeRows[i];
-        strikeRowIndex = i + 1;
-        break;
+      const row = strikeRows[i];
+      if (row[targetIdx] === targetUser.id && row[statusIdx] === 'Active') {
+        if (!strikeIdQuery || row[idIdx] === strikeIdQuery.trim().toUpperCase()) {
+          strikeRow = row;
+          strikeRowIndex = i + 1;
+          break;
+        }
       }
     }
 
     if (!strikeRow) {
-      return interaction.editReply({ content: 'No active strikes to pardon for this member.' });
+      return interaction.editReply({
+        content: `❌ No active strikes found for <@${targetUser.id}>${strikeIdQuery ? ` matching docket \`${strikeIdQuery}\`` : ''}.`,
+      });
     }
 
-    const issuerId = strikeRow[issuedByIdx];
-    const issuerMember = await interaction.guild.members.fetch(issuerId).catch(() => null);
-    const issuerRank = issuerMember ? getMemberRank(issuerMember) : null;
-
-    if (!canPardon(executorRank, issuerRank ? issuerRank.level : 999)) {
-      return interaction.editReply({ content: 'You do not have authority to pardon this strike. You must be equal or higher rank than the issuer.' });
+    // Verify chain of command authority
+    const issuerId = strikeRow[issuerIdx];
+    let issuerRankLevel = 1;
+    try {
+      const issuerMember = await interaction.guild.members.fetch(issuerId);
+      const issuerRank = getMemberRank(issuerMember);
+      if (issuerRank) issuerRankLevel = issuerRank.level;
+    } catch {
+      // Issuer might have left
+      issuerRankLevel = 1;
     }
 
-    const currentStrikes = parseInt(targetData.Strike_Count || '0');
-    const severity = strikeRow[headers.indexOf('Severity')];
-    const removed = severity === 'Major' ? 2 : 1;
-    const newStrikes = Math.max(0, currentStrikes - removed);
+    if (!canPardon(executorRank, issuerRankLevel)) {
+      return interaction.editReply({
+        content: '❌ Insufficient authority. Under CAF military justice, you must be of equal or higher rank than the citing officer to grant a pardon.',
+      });
+    }
+
+    const currentStrikes = parseInt(targetData.Strike_Count || '0', 10);
+    const severity = strikeRow[severityIdx] || 'Minor';
+    const removedCount = severity === 'Major' ? 2 : 1;
+    const newStrikes = Math.max(0, currentStrikes - removedCount);
     const now = new Date().toISOString();
 
-    // Update strike log
+    // 1. Update Strike_Log
     strikeRow[statusIdx] = 'Pardoned';
-    strikeRow[headers.indexOf('Pardoned_By')] = interaction.user.id;
-    strikeRow[headers.indexOf('Pardon_Date')] = now;
+    const pardonedByIdx = headers.indexOf('Pardoned_By');
+    const pardonDateIdx = headers.indexOf('Pardon_Date');
+    if (pardonedByIdx !== -1) strikeRow[pardonedByIdx] = interaction.user.id;
+    if (pardonDateIdx !== -1) strikeRow[pardonDateIdx] = now;
     await updateRow('Strike_Log', strikeRowIndex, strikeRow);
 
-    // Update personnel sheet
-    const sheetName = targetData.Current_Sheet;
-    const rows = await readSheet(sheetName);
-    const pHeaders = rows[0];
-    const discordIdx = pHeaders.indexOf('Discord_ID');
-    for (let i = 1; i < rows.length; i++) {
-      if (rows[i][discordIdx] === targetUser.id) {
-        const row = rows[i];
-        row[pHeaders.indexOf('Strike_Count')] = String(newStrikes);
-        await updateRow(sheetName, i + 1, row);
-        break;
-      }
-    }
-
+    // 2. Update Personnel_Index
     await updatePersonnelIndex(targetUser.id, {
       Strike_Count: String(newStrikes),
       Last_Updated: now,
     });
 
+    // 3. Log Audit
     await logAudit({
       action: 'PARDON',
       targetDiscord: targetUser.id,
       targetRoblox: targetData.Roblox_ID,
       oldStrikes: currentStrikes,
-      newStrikes: newStrikes,
+      newStrikes,
       executorDiscord: interaction.user.id,
       executorRank: executorRank.name,
-      reason,
+      reason: `[DOCKET ${strikeRow[idIdx]}] ${reason}`,
       robloxChanged: false,
+      client: interaction.client,
     });
 
-    const embed = new EmbedBuilder()
-      .setTitle('Strike Pardoned')
-      .setColor(0x00AA00)
-      .addFields(
-        { name: 'Member', value: `<@${targetUser.id}>`, inline: true },
-        { name: 'Strike Severity', value: severity, inline: true },
-        { name: 'Strike Count', value: `${currentStrikes} → **${newStrikes}**`, inline: true },
-        { name: 'Pardoned By', value: `<@${interaction.user.id}>`, inline: true },
-        { name: 'Reason', value: reason, inline: false },
+    const embed = RcmEmbed.success('DISCIPLINARY PARDON GRANTED')
+      .setDescription(
+        `An official executive pardon has been registered for <@${targetUser.id}> (${targetData.Roblox_Username}).`
       )
-      .setTimestamp();
+      .addFields(
+        { name: '🎖️ Member', value: `<@${targetUser.id}> (\`${targetData.Current_Rank}\`)`, inline: true },
+        { name: '⚖️ Pardoned Infraction', value: `\`${severity} (-${removedCount} Strikes)\``, inline: true },
+        { name: '📊 Adjusted Active Strikes', value: `\`${currentStrikes}\` ➡️ **\`${newStrikes}\` Strikes**, inline: true` },
+        { name: '👑 Reviewing Authority', value: `<@${interaction.user.id}> (${executorRank.abbr})`, inline: true },
+        { name: '🆔 Cleared Docket', value: `\`${strikeRow[idIdx]}\``, inline: true },
+        { name: '📜 Pardon Justification', value: `*"${reason}"*`, inline: false }
+      );
 
     await interaction.editReply({ embeds: [embed] });
   },

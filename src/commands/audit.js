@@ -1,28 +1,39 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder } = require('discord.js');
 const { readSheet } = require('../utils/sheets');
 const { getMemberRank, canAudit } = require('../utils/permissions');
+const { RcmEmbed } = require('../utils/embeds');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('audit')
-    .setDescription('View audit history for a member')
-    .addUserOption(option => option.setName('user').setDescription('Member to audit').setRequired(true))
-    .addIntegerOption(option => option.setName('limit').setDescription('Number of entries (5-25)').setMinValue(5).setMaxValue(25))
-    .addStringOption(option =>
-      option.setName('action')
-        .setDescription('Filter by action type')
+    .setDescription('Inspect formal administrative and disciplinary audit history (Sergeant+)')
+    .addUserOption(opt => opt.setName('user').setDescription('Target member to audit').setRequired(true))
+    .addIntegerOption(opt =>
+      opt.setName('limit')
+        .setDescription('Number of records to retrieve (5-25)')
+        .setMinValue(5)
+        .setMaxValue(25)
+    )
+    .addStringOption(opt =>
+      opt.setName('action')
+        .setDescription('Filter by specific action type')
         .setRequired(false)
         .addChoices(
-          { name: 'Promote', value: 'PROMOTE' },
-          { name: 'Demote', value: 'DEMOTE' },
-          { name: 'Strike', value: 'STRIKE' },
-          { name: 'Pardon', value: 'PARDON' },
-          { name: 'Discharge', value: 'DISCHARGE' },
-          { name: 'LOA', value: 'LOA' },
-          { name: 'Edit', value: 'EDIT' },
-        )),
+          { name: '⬆️ Promotions', value: 'PROMOTE' },
+          { name: '⬇️ Demotions', value: 'DEMOTE' },
+          { name: '⚠️ Strikes', value: 'STRIKE' },
+          { name: '✅ Pardons', value: 'PARDON' },
+          { name: '🔴 Discharges', value: 'DISCHARGE' },
+          { name: '🛡️ Regimental Postings', value: 'REGIMENT' },
+          { name: '⛔ Blacklists', value: 'BLACKLIST' },
+          { name: '🔵 Leaves of Absence', value: 'LOA' },
+        )
+    ),
+  cooldown: 5000,
 
   async execute(interaction) {
+    await interaction.deferReply();
+
     const targetUser = interaction.options.getUser('user');
     const limit = interaction.options.getInteger('limit') || 10;
     const actionFilter = interaction.options.getString('action');
@@ -31,12 +42,14 @@ module.exports = {
     const executorRank = getMemberRank(executorMember);
 
     if (!canAudit(executorRank)) {
-      return interaction.reply({ content: 'You do not have authority to view audit logs.', ephemeral: true });
+      return interaction.editReply({
+        content: '❌ Insufficient authority. Only Non-Commissioned Officers (Sergeant+) and above can inspect audit dockets.',
+      });
     }
 
     const auditRows = await readSheet('Audit_Log');
     if (auditRows.length <= 1) {
-      return interaction.reply({ content: 'No audit entries found.', ephemeral: true });
+      return interaction.editReply({ content: 'ℹ️ No entries currently recorded in the audit docket.' });
     }
 
     const headers = auditRows[0];
@@ -48,37 +61,46 @@ module.exports = {
     const oldRankIdx = headers.indexOf('Old_Rank');
     const newRankIdx = headers.indexOf('New_Rank');
 
-    let filtered = auditRows.slice(1).reverse().filter(r => r[targetIdx] === targetUser.id);
+    let filtered = auditRows
+      .slice(1)
+      .reverse()
+      .filter(r => r[targetIdx] === targetUser.id);
+
     if (actionFilter) {
-      filtered = filtered.filter(r => r[actionIdx] === actionFilter);
+      filtered = filtered.filter(r => (r[actionIdx] || '').includes(actionFilter));
     }
+
     filtered = filtered.slice(0, limit);
 
     if (filtered.length === 0) {
-      return interaction.reply({ content: `No audit entries found for <@${targetUser.id}>${actionFilter ? ` with action type **${actionFilter}**` : ''}.`, ephemeral: true });
+      return interaction.editReply({
+        content: `ℹ️ No audit history found for <@${targetUser.id}>${actionFilter ? ` matching action \`${actionFilter}\`` : ''}.`,
+      });
     }
 
-    const embed = new EmbedBuilder()
-      .setTitle(`Audit Log — ${targetUser.username}`)
-      .setColor(0xC41E3A)
-      .setDescription(`Showing last ${filtered.length} entries`)
-      .setFooter({ text: `Discord ID: ${targetUser.id}` });
+    const embed = RcmEmbed.base(`AUDIT TRAIL • ${targetUser.username}`)
+      .setDescription(
+        `Showing last **${filtered.length}** administrative records for <@${targetUser.id}>.\n` +
+        `Audit Authority: <@${interaction.user.id}> (${executorRank.abbr})`
+      );
 
     for (const row of filtered.slice(0, 10)) {
-      const date = row[dateIdx] ? row[dateIdx].split('T')[0] : '?';
-      const action = row[actionIdx] || '?';
-      const by = row[executorIdx] ? `<@${row[executorIdx]}>` : 'Unknown';
+      const time = RcmEmbed.formatTimestamp(row[dateIdx], 'f');
+      const action = row[actionIdx] || 'UNKNOWN';
+      const by = row[executorIdx] ? `<@${row[executorIdx]}>` : 'SYSTEM';
       const oldR = row[oldRankIdx] || '—';
       const newR = row[newRankIdx] || '—';
-      const reason = row[reasonIdx] || 'No reason provided';
+      const reason = row[reasonIdx] || 'No justification logged';
+
+      const changeInfo = (oldR !== '—' || newR !== '—') ? `\`${oldR}\` ➡️ \`${newR}\`\n` : '';
 
       embed.addFields({
-        name: `${action} — ${date}`,
-        value: `By: ${by}\n${oldR !== '—' && newR !== '—' ? `${oldR} → ${newR}\n` : ''}${reason.length > 100 ? reason.slice(0, 100) + '...' : reason}`,
+        name: `📌 [${action}] • ${time}`,
+        value: `${changeInfo}**By:** ${by}\n**Rationale:** *"${reason.length > 120 ? reason.slice(0, 120) + '...' : reason}"*`,
         inline: false,
       });
     }
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] });
   },
 };

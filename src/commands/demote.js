@@ -1,16 +1,21 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder } = require('discord.js');
 const { getRankByLevel, getPreviousRank } = require('../../config');
-const { getMemberFromIndex, readSheet, appendRow, updateRow, deleteRow, updatePersonnelIndex } = require('../utils/sheets');
+const { getMemberFromIndex, updatePersonnelIndex } = require('../utils/sheets');
 const { getMemberRank, canDemote } = require('../utils/permissions');
 const { setRank } = require('../utils/roblox');
 const { logAudit } = require('../utils/audit');
+const { RcmEmbed } = require('../utils/embeds');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('demote')
-    .setDescription('Demote a member one rank')
-    .addUserOption(option => option.setName('user').setDescription('Member to demote').setRequired(true))
-    .addStringOption(option => option.setName('reason').setDescription('Reason for demotion').setRequired(true)),
+    .setDescription('Demote a member one rank down the Canadian Armed Forces hierarchy')
+    .addUserOption(option =>
+      option.setName('user').setDescription('Service member to demote').setRequired(true)
+    )
+    .addStringOption(option =>
+      option.setName('reason').setDescription('Disciplinary / Demotion rationale').setRequired(true)
+    ),
   cooldown: 5000,
 
   async execute(interaction) {
@@ -23,129 +28,88 @@ module.exports = {
     const executorRank = getMemberRank(executorMember);
 
     if (!executorRank) {
-      return interaction.editReply({ content: 'You do not have a recognized rank.' });
+      return interaction.editReply({ content: '❌ You do not hold an authorized rank.' });
     }
 
     const targetData = await getMemberFromIndex(targetUser.id);
     if (!targetData) {
-      return interaction.editReply({ content: 'Target is not in the database.' });
+      return interaction.editReply({ content: '❌ Target is not indexed in the database.' });
     }
 
-    const currentLevel = parseInt(targetData.Rank_Level);
+    const currentLevel = parseInt(targetData.Rank_Level, 10);
     const newRank = getPreviousRank(currentLevel);
 
     if (!newRank) {
-      return interaction.editReply({ content: 'Target is already at the lowest rank. Use `/discharge` instead.' });
+      return interaction.editReply({
+        content: `⚠️ Target is already at the lowest rank (**${targetData.Current_Rank}**). Use \`/discharge\` if disciplinary separation is required.`,
+      });
     }
 
     if (!canDemote(executorRank, currentLevel, newRank.level)) {
-      return interaction.editReply({ content: `You cannot demote this member to **${newRank.name}**.` });
+      return interaction.editReply({
+        content: `❌ You do not have authority to demote personnel from **${targetData.Current_Rank}** to **${newRank.name}**.`,
+      });
     }
 
+    // 1. Roblox Rank Change
+    let robloxUpdated = false;
     try {
       await setRank(targetData.Roblox_ID, newRank.name);
+      robloxUpdated = true;
     } catch (err) {
-      console.error('Roblox rank change failed:', err);
-      return interaction.editReply({ content: 'Failed to update Roblox group rank. No changes were made.' });
+      console.error('[Demote] Roblox rank change failed:', err.message);
+      return interaction.editReply({
+        content: `❌ Roblox group demotion failed: \`${err.message}\`. No alterations made.`,
+      });
     }
 
+    // 2. Discord Role Change
     try {
       const targetMember = await interaction.guild.members.fetch(targetUser.id);
       const oldRank = getRankByLevel(currentLevel);
-      if (oldRank) await targetMember.roles.remove(oldRank.roleId);
-      await targetMember.roles.add(newRank.roleId);
+      if (oldRank?.roleId && targetMember.roles.cache.has(oldRank.roleId)) {
+        await targetMember.roles.remove(oldRank.roleId);
+      }
+      if (newRank.roleId) {
+        await targetMember.roles.add(newRank.roleId);
+      }
     } catch (err) {
-      console.error('Discord role update failed:', err);
+      console.warn('[Demote] Discord role update warning:', err.message);
     }
 
-    const oldSheet = targetData.Current_Sheet;
+    // 3. Update Personnel_Index
     const now = new Date().toISOString();
-
-    if (oldSheet !== newRank.sheet) {
-      try {
-        const oldRows = await readSheet(oldSheet);
-        const oldHeaders = oldRows[0];
-        const discordIdx = oldHeaders.indexOf('Discord_ID');
-        let oldRowData = null;
-        let oldRowIndex = -1;
-        for (let i = 1; i < oldRows.length; i++) {
-          if (oldRows[i][discordIdx] === targetUser.id) {
-            oldRowData = oldRows[i];
-            oldRowIndex = i + 1;
-            break;
-          }
-        }
-        if (oldRowData) {
-          await appendRow(newRank.sheet, [
-            targetUser.id,
-            targetData.Roblox_ID,
-            targetData.Roblox_Username,
-            newRank.name,
-            String(newRank.level),
-            oldRowData[oldHeaders.indexOf('Branch')] || '',
-            oldRowData[oldHeaders.indexOf('Join_Date')] || '',
-            oldRowData[oldHeaders.indexOf('Last_Promotion')] || '',
-            oldRowData[oldHeaders.indexOf('Strike_Count')] || '0',
-            oldRowData[oldHeaders.indexOf('Total_Strikes')] || '0',
-            'Active',
-            oldRowData[oldHeaders.indexOf('LOA_Until')] || '',
-            oldRowData[oldHeaders.indexOf('Notes')] || '',
-          ]);
-          await deleteRow(oldSheet, oldRowIndex);
-        }
-      } catch (err) {
-        console.error('Cross-sheet move failed:', err);
-      }
-    } else {
-      try {
-        const rows = await readSheet(oldSheet);
-        const headers = rows[0];
-        const discordIdx = headers.indexOf('Discord_ID');
-        for (let i = 1; i < rows.length; i++) {
-          if (rows[i][discordIdx] === targetUser.id) {
-            const row = rows[i];
-            row[headers.indexOf('Rank')] = newRank.name;
-            row[headers.indexOf('Rank_Level')] = String(newRank.level);
-            await updateRow(oldSheet, i + 1, row);
-            break;
-          }
-        }
-      } catch (err) {
-        console.error('In-sheet update failed:', err);
-      }
-    }
-
     await updatePersonnelIndex(targetUser.id, {
       Current_Rank: newRank.name,
       Rank_Level: String(newRank.level),
       Class: newRank.class,
-      Current_Sheet: newRank.sheet,
       Last_Updated: now,
     });
 
+    // 4. Log Audit
     await logAudit({
       action: 'DEMOTE',
       targetDiscord: targetUser.id,
       targetRoblox: targetData.Roblox_ID,
-      oldRank: getRankByLevel(currentLevel)?.name || '',
+      oldRank: targetData.Current_Rank,
       newRank: newRank.name,
       executorDiscord: interaction.user.id,
       executorRank: executorRank.name,
       reason,
-      robloxChanged: true,
+      robloxChanged: robloxUpdated,
+      client: interaction.client,
     });
 
-    const embed = new EmbedBuilder()
-      .setTitle('Demotion Executed')
-      .setColor(0xFF4400)
+    const embed = RcmEmbed.warning('CANADIAN ARMED FORCES • DEMOTION ORDER')
+      .setDescription(`An official administrative demotion has taken effect for <@${targetUser.id}>.`)
       .addFields(
-        { name: 'Member', value: `<@${targetUser.id}>`, inline: true },
-        { name: 'From', value: getRankByLevel(currentLevel)?.name || 'Unknown', inline: true },
-        { name: 'To', value: newRank.name, inline: true },
-        { name: 'By', value: `<@${interaction.user.id}>`, inline: true },
-        { name: 'Reason', value: reason, inline: false },
+        { name: '🎖️ Former Rank', value: targetData.Current_Rank, inline: true },
+        { name: '⬇️ Reduced Rank', value: `**${newRank.name}** (\`${newRank.abbr}\`)`, inline: true },
+        { name: '👑 Demoting Officer', value: `<@${interaction.user.id}> (${executorRank.abbr})`, inline: true },
+        { name: '🌐 Roblox Sync', value: '✅ Group Rank Synchronized', inline: true },
+        { name: '📋 Action Rationale', value: `*"${reason}"*`, inline: false },
       )
-      .setTimestamp();
+      .setThumbnail(`https://www.roblox.com/headshot-thumbnail/image?userId=${targetData.Roblox_ID}&width=150&height=150&format=png`);
 
     await interaction.editReply({ embeds: [embed] });
   },

@@ -1,86 +1,113 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const { getMemberFromIndex, readSheet, updateRow, updatePersonnelIndex } = require('../utils/sheets');
+const { SlashCommandBuilder } = require('discord.js');
+const { getMemberFromIndex, updatePersonnelIndex } = require('../utils/sheets');
 const { getMemberRank } = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
+const { RcmEmbed } = require('../utils/embeds');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('loa')
-    .setDescription('Request or manage Leave of Absence')
-    .addStringOption(option => option.setName('start').setDescription('Start date (YYYY-MM-DD)').setRequired(true))
-    .addStringOption(option => option.setName('end').setDescription('End date (YYYY-MM-DD)').setRequired(true))
-    .addStringOption(option => option.setName('reason').setDescription('Reason for LOA').setRequired(true))
-    .addUserOption(option => option.setName('user').setDescription('Officer use: manage LOA for another member').setRequired(false)),
+    .setDescription('Request, approve, or conclude a Leave of Absence (LOA)')
+    .addSubcommand(sub =>
+      sub.setName('request')
+        .setDescription('Request or log a Leave of Absence for yourself or another member')
+        .addStringOption(opt => opt.setName('start').setDescription('Start date (YYYY-MM-DD)').setRequired(true))
+        .addStringOption(opt => opt.setName('end').setDescription('End date (YYYY-MM-DD)').setRequired(true))
+        .addStringOption(opt => opt.setName('reason').setDescription('Reason for absence').setRequired(true))
+        .addUserOption(opt => opt.setName('user').setDescription('Officer use: member receiving LOA').setRequired(false))
+    )
+    .addSubcommand(sub =>
+      sub.setName('return')
+        .setDescription('Conclude a Leave of Absence and return to active status')
+        .addUserOption(opt => opt.setName('user').setDescription('Officer use: member returning to active duty').setRequired(false))
+    ),
+  cooldown: 5000,
 
   async execute(interaction) {
-    const start = interaction.options.getString('start');
-    const end = interaction.options.getString('end');
-    const reason = interaction.options.getString('reason');
-    const targetUser = interaction.options.getUser('user');
+    await interaction.deferReply();
+
+    const subcommand = interaction.options.getSubcommand();
+    const targetUser = interaction.options.getUser('user') || interaction.user;
 
     const executorMember = await interaction.guild.members.fetch(interaction.user.id);
     const executorRank = getMemberRank(executorMember);
     const isOfficer = executorRank && executorRank.canPromote;
 
-    const subject = targetUser || interaction.user;
-
-    // If targeting another user, must be officer
-    if (targetUser && targetUser.id !== interaction.user.id && !isOfficer) {
-      return interaction.reply({ content: 'Only officers can manage LOA for other members.', ephemeral: true });
+    // Non-officers can only manage their own LOA
+    if (targetUser.id !== interaction.user.id && !isOfficer) {
+      return interaction.editReply({
+        content: '❌ Only commissioned officers can log or modify a Leave of Absence for another service member.',
+      });
     }
 
-    const targetData = await getMemberFromIndex(subject.id);
+    const targetData = await getMemberFromIndex(targetUser.id);
     if (!targetData) {
-      return interaction.reply({ content: 'Member not found in database.', ephemeral: true });
+      return interaction.editReply({
+        content: '❌ Member is not indexed in the personnel database. Run `/verify` first.',
+      });
     }
 
     const now = new Date().toISOString();
-    const sheetName = targetData.Current_Sheet;
 
-    // Update personnel sheet
-    try {
-      const rows = await readSheet(sheetName);
-      const headers = rows[0];
-      const discordIdx = headers.indexOf('Discord_ID');
-      for (let i = 1; i < rows.length; i++) {
-        if (rows[i][discordIdx] === subject.id) {
-          const row = rows[i];
-          row[headers.indexOf('Status')] = 'LOA';
-          row[headers.indexOf('LOA_Until')] = end;
-          await updateRow(sheetName, i + 1, row);
-          break;
-        }
-      }
-    } catch (err) {
-      console.error('LOA sheet update failed:', err);
+    if (subcommand === 'request') {
+      const start = interaction.options.getString('start');
+      const end = interaction.options.getString('end');
+      const reason = interaction.options.getString('reason');
+
+      await updatePersonnelIndex(targetUser.id, {
+        Status: 'LOA',
+        Last_Updated: now,
+      });
+
+      await logAudit({
+        action: 'LOA_START',
+        targetDiscord: targetUser.id,
+        targetRoblox: targetData.Roblox_ID,
+        executorDiscord: interaction.user.id,
+        executorRank: executorRank ? executorRank.name : 'SELF',
+        reason: `${start} to ${end}: ${reason}`,
+        robloxChanged: false,
+        client: interaction.client,
+      });
+
+      const embed = RcmEmbed.base('LEAVE OF ABSENCE REGISTERED')
+        .setDescription(`An official military Leave of Absence (LOA) has been authorized for <@${targetUser.id}>.`)
+        .addFields(
+          { name: '🎖️ Member', value: `<@${targetUser.id}> (\`${targetData.Current_Rank}\`)`, inline: true },
+          { name: '📋 Status', value: '🔵 `ON LEAVE (LOA)`', inline: true },
+          { name: '📅 Leave Duration', value: `\`${start}\` ➡️ \`${end}\``, inline: true },
+          { name: '👑 Authorized By', value: `<@${interaction.user.id}> (${executorRank ? executorRank.abbr : 'SELF'})`, inline: true },
+          { name: '📜 Documented Rationale', value: `*"${reason}"*`, inline: false }
+        );
+
+      return interaction.editReply({ embeds: [embed] });
     }
 
-    await updatePersonnelIndex(subject.id, {
-      Status: 'LOA',
-      Last_Updated: now,
-    });
+    if (subcommand === 'return') {
+      await updatePersonnelIndex(targetUser.id, {
+        Status: 'Active',
+        Last_Updated: now,
+      });
 
-    await logAudit({
-      action: 'LOA',
-      targetDiscord: subject.id,
-      targetRoblox: targetData.Roblox_ID,
-      executorDiscord: interaction.user.id,
-      executorRank: executorRank ? executorRank.name : 'Unknown',
-      reason: `${start} to ${end}: ${reason}`,
-      robloxChanged: false,
-    });
+      await logAudit({
+        action: 'LOA_RETURN',
+        targetDiscord: targetUser.id,
+        targetRoblox: targetData.Roblox_ID,
+        executorDiscord: interaction.user.id,
+        executorRank: executorRank ? executorRank.name : 'SELF',
+        reason: 'Returned to Active Duty',
+        robloxChanged: false,
+        client: interaction.client,
+      });
 
-    const embed = new EmbedBuilder()
-      .setTitle('Leave of Absence')
-      .setColor(0x0099FF)
-      .addFields(
-        { name: 'Member', value: `<@${subject.id}>`, inline: true },
-        { name: 'Status', value: 'LOA Approved', inline: true },
-        { name: 'Period', value: `${start} → ${end}`, inline: false },
-        { name: 'Reason', value: reason, inline: false },
-      )
-      .setTimestamp();
+      const embed = RcmEmbed.success('RETURN TO ACTIVE DUTY')
+        .setDescription(`<@${targetUser.id}> has concluded their Leave of Absence and is returned to **Active Service** standing.`)
+        .addFields(
+          { name: '🎖️ Member', value: `<@${targetUser.id}> (\`${targetData.Current_Rank}\`)`, inline: true },
+          { name: '📋 Restored Status', value: '🟢 `ACTIVE`', inline: true }
+        );
 
-    await interaction.reply({ embeds: [embed] });
+      return interaction.editReply({ embeds: [embed] });
+    }
   },
 };

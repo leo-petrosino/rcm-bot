@@ -1,25 +1,27 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const { getMemberFromIndex, readSheet, updateRow, updatePersonnelIndex } = require('../utils/sheets');
+const { SlashCommandBuilder } = require('discord.js');
+const { getMemberFromIndex, updatePersonnelIndex } = require('../utils/sheets');
 const { getMemberRank, canEditProfile } = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
+const { RcmEmbed } = require('../utils/embeds');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('editprofile')
-    .setDescription('Edit a member\'s database record (Major+)')
-    .addUserOption(option => option.setName('user').setDescription('Member to edit').setRequired(true))
-    .addStringOption(option =>
-      option.setName('field')
-        .setDescription('Field to edit')
+    .setDescription("Modify a member's personnel dossier records (Major+)")
+    .addUserOption(opt => opt.setName('user').setDescription('Personnel to edit').setRequired(true))
+    .addStringOption(opt =>
+      opt.setName('field')
+        .setDescription('Record field to modify')
         .setRequired(true)
         .addChoices(
-          { name: 'Branch', value: 'Branch' },
-          { name: 'Notes', value: 'Notes' },
-          { name: 'Roblox_ID', value: 'Roblox_ID' },
-          { name: 'Join_Date', value: 'Join_Date' },
-        ))
-    .addStringOption(option => option.setName('value').setDescription('New value').setRequired(true))
-    .addStringOption(option => option.setName('reason').setDescription('Reason for edit').setRequired(true)),
+          { name: '🛡️ Regiment', value: 'Regiment' },
+          { name: '🌐 Roblox ID', value: 'Roblox_ID' },
+          { name: '👤 Roblox Username', value: 'Roblox_Username' },
+          { name: '📅 Join Date (YYYY-MM-DD)', value: 'Join_Date' },
+        )
+    )
+    .addStringOption(opt => opt.setName('value').setDescription('New value to set').setRequired(true))
+    .addStringOption(opt => opt.setName('reason').setDescription('Administrative justification').setRequired(true)),
   cooldown: 5000,
 
   async execute(interaction) {
@@ -34,40 +36,26 @@ module.exports = {
     const executorRank = getMemberRank(executorMember);
 
     if (!canEditProfile(executorRank)) {
-      return interaction.editReply({ content: 'You do not have authority to edit profiles.' });
+      return interaction.editReply({
+        content: '❌ Insufficient authority. Only senior field officers (Major+) can modify personnel dossiers.',
+      });
     }
 
     const targetData = await getMemberFromIndex(targetUser.id);
     if (!targetData) {
-      return interaction.editReply({ content: 'Target is not in the database.' });
+      return interaction.editReply({ content: '❌ Target is not indexed in the personnel database.' });
     }
 
-    const sheetName = targetData.Current_Sheet;
-    const rows = await readSheet(sheetName);
-    const headers = rows[0];
-    const discordIdx = headers.indexOf('Discord_ID');
-    let oldValue = '';
-
-    for (let i = 1; i < rows.length; i++) {
-      if (rows[i][discordIdx] === targetUser.id) {
-        const row = rows[i];
-        const fieldIdx = headers.indexOf(field);
-        if (fieldIdx !== -1) {
-          oldValue = row[fieldIdx] || '';
-          row[fieldIdx] = value;
-          await updateRow(sheetName, i + 1, row);
-        }
-        break;
-      }
-    }
-
+    const oldValue = targetData[field] || 'None';
     const now = new Date().toISOString();
+
     await updatePersonnelIndex(targetUser.id, {
+      [field]: value,
       Last_Updated: now,
     });
 
     await logAudit({
-      action: 'EDIT',
+      action: 'EDIT_PROFILE',
       targetDiscord: targetUser.id,
       targetRoblox: targetData.Roblox_ID,
       oldRank: `${field}: ${oldValue}`,
@@ -76,20 +64,19 @@ module.exports = {
       executorRank: executorRank.name,
       reason,
       robloxChanged: false,
+      client: interaction.client,
     });
 
-    const embed = new EmbedBuilder()
-      .setTitle('Profile Edited')
-      .setColor(0xFFA500)
+    const embed = RcmEmbed.base('PERSONNEL DOSSIER AMENDED')
+      .setDescription(`Administrative amendments have been recorded for <@${targetUser.id}>.`)
       .addFields(
-        { name: 'Member', value: `<@${targetUser.id}>`, inline: true },
-        { name: 'Field', value: field, inline: true },
-        { name: 'Old Value', value: oldValue || '—', inline: false },
-        { name: 'New Value', value: value, inline: false },
-        { name: 'By', value: `<@${interaction.user.id}>`, inline: true },
-        { name: 'Reason', value: reason, inline: false },
-      )
-      .setTimestamp();
+        { name: 'Target Member', value: `<@${targetUser.id}> (\`${targetData.Current_Rank}\`)`, inline: true },
+        { name: 'Modified Field', value: `\`${field}\``, inline: true },
+        { name: 'Former Value', value: `\`${oldValue}\``, inline: true },
+        { name: 'Updated Value', value: `\`${value}\``, inline: true },
+        { name: 'Authorizing Officer', value: `<@${interaction.user.id}> (${executorRank.abbr})`, inline: true },
+        { name: 'Administrative Justification', value: `*"${reason}"*`, inline: false }
+      );
 
     await interaction.editReply({ embeds: [embed] });
   },
