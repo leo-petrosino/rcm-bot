@@ -1,9 +1,9 @@
-const { ActivityType } = require('discord.js');
+const { ActivityType, Events } = require('discord.js');
 const { initRoblox, getGroupRoles } = require('../utils/roblox');
 const { ROBLOX_GROUP_ID, RUNTIME_CACHE } = require('../../config');
 
 module.exports = {
-  name: 'ready',
+  name: Events.ClientReady || 'ready',
   once: true,
   async execute(client) {
     console.log(`[Discord] Authenticated as ${client.user.tag} (ID: ${client.user.id})`);

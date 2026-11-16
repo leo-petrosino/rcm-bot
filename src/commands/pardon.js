@@ -12,12 +12,12 @@ module.exports = {
       option.setName('user').setDescription('Personnel being pardoned').setRequired(true)
     )
     .addStringOption(option =>
+      option.setName('reason').setDescription('Pardon justification rationale').setRequired(true)
+    )
+    .addStringOption(option =>
       option.setName('strike_id')
         .setDescription('Optional specific docket ID (e.g. STK-1). Defaults to most recent active strike')
         .setRequired(false)
-    )
-    .addStringOption(option =>
-      option.setName('reason').setDescription('Pardon justification rationale').setRequired(true)
     ),
   cooldown: 5000,
 
