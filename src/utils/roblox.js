@@ -4,6 +4,35 @@ const { ROBLOX_GROUP_ID, REGIMENTS } = require('../../config');
 let isLoggedIn = false;
 let botUser = null;
 
+const ROBLOX_WARNING_PREFIX = '_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-into-your-account-and-to-steal-your-ROBUX-and-clothing._';
+
+/**
+ * Sanitizes and normalizes Roblox cookie string
+ */
+function sanitizeCookie(raw) {
+  if (!raw) return '';
+  let cookie = String(raw).trim();
+
+  // Strip wrapping quotes (single, double, or backticks)
+  if (
+    (cookie.startsWith('"') && cookie.endsWith('"')) ||
+    (cookie.startsWith("'") && cookie.endsWith("'")) ||
+    (cookie.startsWith('`') && cookie.endsWith('`'))
+  ) {
+    cookie = cookie.slice(1, -1).trim();
+  }
+
+  // Remove carriage returns or newlines
+  cookie = cookie.replace(/[\r\n]/g, '').trim();
+
+  // If user only pasted the hash without warning header, auto-prepend warning
+  if (!cookie.toLowerCase().includes('warning:-')) {
+    cookie = `${ROBLOX_WARNING_PREFIX}${cookie}`;
+  }
+
+  return cookie;
+}
+
 /**
  * Initializes Noblox session with the configured logistics account cookie
  */
@@ -13,14 +42,20 @@ async function initRoblox() {
     return false;
   }
 
+  const cleanCookie = sanitizeCookie(process.env.ROBLOX_COOKIE);
+
   try {
-    botUser = await noblox.setCookie(process.env.ROBLOX_COOKIE);
+    botUser = await noblox.setCookie(cleanCookie);
     isLoggedIn = true;
-    console.log(`[Roblox] Successfully authenticated logistics account: ${botUser.UserName} (${botUser.UserID})`);
+    console.log(`[Roblox] Successfully authenticated logistics account: ${botUser.UserName || botUser.name} (${botUser.UserID || botUser.id})`);
     return true;
   } catch (err) {
     isLoggedIn = false;
     console.error('[Roblox] Authentication failed:', err.message);
+    const len = cleanCookie.length;
+    const preview = len > 20 ? `${cleanCookie.substring(0, 15)}...${cleanCookie.substring(len - 8)}` : '(too short)';
+    console.error(`[Roblox Diagnostic] Cookie length: ${len} chars | Preview: ${preview}`);
+    console.error('[Roblox Diagnostic] If cookie was freshly copied, this is typically caused by Roblox IP-locking (cookie created on home PC used on VPS).');
     return false;
   }
 }
@@ -141,6 +176,7 @@ async function getUserAvatarUrl(userId) {
 module.exports = {
   initRoblox,
   isRobloxReady,
+  sanitizeCookie,
   getUserId,
   getUsername,
   getGroupRoles,

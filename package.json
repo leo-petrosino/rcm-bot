@@ -10,8 +10,8 @@
   },
   "dependencies": {
     "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1",
     "googleapis": "^128.0.0",
-    "noblox.js": "^4.15.1",
-    "dotenv": "^16.3.1"
+    "noblox.js": "^9.0.0"
   }
 }
