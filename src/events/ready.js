@@ -34,5 +34,15 @@ module.exports = {
     } else {
       console.warn('[Roblox] Logistics account offline. Check ROBLOX_COOKIE in environment.');
     }
+
+    // Auto-reconcile class sheets on startup (e.g. moving promoted members into proper class tabs)
+    try {
+      const { syncAllClassSheets } = require('../utils/sheets');
+      syncAllClassSheets()
+        .then(res => console.log(`[Sheets] Auto-reconciled class sheets: ${res.synced} checked, ${res.moved} adjusted.`))
+        .catch(err => console.warn('[Sheets] Auto-reconciliation warning:', err.message));
+    } catch (err) {
+      console.warn('[Sheets] Class sheets reconciliation setup error:', err.message);
+    }
   },
 };

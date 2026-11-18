@@ -1,7 +1,7 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { getGroupRoles, getAllGroupRanks } = require('../utils/roblox');
 const { RUNTIME_CACHE, ROBLOX_GROUP_ID, RANKS, REGIMENTS } = require('../../config');
-const { readSheet, appendRow, updateRow, ensureSheetExists } = require('../utils/sheets');
+const { readSheet, appendRow, updateRow, ensureSheetExists, syncAllClassSheets } = require('../utils/sheets');
 const { RcmEmbed } = require('../utils/embeds');
 
 module.exports = {
@@ -83,7 +83,10 @@ module.exports = {
         resource: { values: matrixRows },
       });
 
-      // 5. Check Regimental groups if configured
+      // 5. Reconcile all 9 Class tabs with Personnel_Index
+      const classSync = await syncAllClassSheets();
+
+      // 6. Check Regimental groups if configured
       const regimentalResults = [];
       for (const reg of REGIMENTS) {
         if (reg.robloxGroupId) {
@@ -100,6 +103,7 @@ module.exports = {
           { name: '🌐 Roblox Group Roles Pulled', value: `\`${robloxRoles.length} Roles Indexed\``, inline: true },
           { name: '💬 Discord Roles Matched', value: `\`${matchedCount} / ${RUNTIME_CACHE.ranks.length} Ranks Linked\``, inline: true },
           { name: '📊 Google Sheet Synced', value: '`Rank_Matrix` tab updated', inline: true },
+          { name: '📋 Class Sheets Reconciled', value: `\`${classSync.synced} Personnel Checked • ${classSync.moved} Adjustments Made\``, inline: true },
           {
             name: '🛡️ Regimental Groups',
             value: regimentalResults.length > 0 ? regimentalResults.join('\n') : '*No external regimental group IDs configured*',

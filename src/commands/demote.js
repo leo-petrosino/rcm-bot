@@ -1,6 +1,6 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { getRankByLevel, getPreviousRank } = require('../../config');
-const { getMemberFromIndex, updatePersonnelIndex } = require('../utils/sheets');
+const { getMemberFromIndex, updatePersonnelIndex, syncMemberClassSheet } = require('../utils/sheets');
 const { getMemberRank, canDemote } = require('../utils/permissions');
 const { setRank } = require('../utils/roblox');
 const { logAudit } = require('../utils/audit');
@@ -77,13 +77,20 @@ module.exports = {
       console.warn('[Demote] Discord role update warning:', err.message);
     }
 
-    // 3. Update Personnel_Index
+    // 3. Update Personnel_Index and Sync Class Sheet
     const now = new Date().toISOString();
     await updatePersonnelIndex(targetUser.id, {
       Current_Rank: newRank.name,
       Rank_Level: String(newRank.level),
       Class: newRank.class,
       Last_Updated: now,
+    });
+
+    await syncMemberClassSheet({
+      discordId: targetUser.id,
+      targetRank: newRank,
+      targetData,
+      oldClassHint: targetData.Class,
     });
 
     // 4. Log Audit

@@ -1,5 +1,5 @@
 const { SlashCommandBuilder } = require('discord.js');
-const { readSheet, appendRow, updateRow, updatePersonnelIndex, getMemberFromIndex, findMemberByRoblox } = require('../utils/sheets');
+const { readSheet, appendRow, updateRow, updatePersonnelIndex, getMemberFromIndex, findMemberByRoblox, removeMemberFromClassSheets } = require('../utils/sheets');
 const { getMemberRank, canBlacklist } = require('../utils/permissions');
 const { getUserId, getUsername, exileUser } = require('../utils/roblox');
 const { logAudit } = require('../utils/audit');
@@ -159,6 +159,7 @@ module.exports = {
           Status: 'Blacklisted',
           Last_Updated: now,
         });
+        await removeMemberFromClassSheets(discordId);
       }
 
       await logAudit({

@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { getMemberFromIndex, appendRow, updatePersonnelIndex } = require('../utils/sheets');
+const { getMemberFromIndex, appendRow, updatePersonnelIndex, removeMemberFromClassSheets } = require('../utils/sheets');
 const { getMemberRank, canDischarge } = require('../utils/permissions');
 const { setRank } = require('../utils/roblox');
 const { logAudit } = require('../utils/audit');
@@ -133,11 +133,13 @@ module.exports = {
         reason,
       ]);
 
-      // 4. Update Personnel_Index status
+      // 4. Update Personnel_Index status and remove from active class sheets
       await updatePersonnelIndex(targetUser.id, {
         Status: 'Discharged',
         Last_Updated: now,
       });
+
+      await removeMemberFromClassSheets(targetUser.id);
 
       // 5. Log Audit
       await logAudit({

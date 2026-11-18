@@ -1,5 +1,5 @@
 const { SlashCommandBuilder } = require('discord.js');
-const { getMemberFromIndex, updatePersonnelIndex } = require('../utils/sheets');
+const { getMemberFromIndex, updatePersonnelIndex, findRowByDiscordId, updateRow } = require('../utils/sheets');
 const { getMemberRank, canEditProfile } = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
 const { RcmEmbed } = require('../utils/embeds');
@@ -53,6 +53,26 @@ module.exports = {
       [field]: value,
       Last_Updated: now,
     });
+
+    // Update in class sheet if present
+    if (targetData.Class) {
+      try {
+        const foundInClass = await findRowByDiscordId(targetData.Class, targetUser.id);
+        if (foundInClass) {
+          const { row, rowIndex, headers } = foundInClass;
+          let col = headers.indexOf(field);
+          if (col === -1 && field === 'Regiment') col = headers.indexOf('Branch');
+          if (col !== -1) {
+            row[col] = value;
+            const updatedIdx = headers.indexOf('Last_Updated');
+            if (updatedIdx !== -1) row[updatedIdx] = now;
+            await updateRow(targetData.Class, rowIndex, row);
+          }
+        }
+      } catch (err) {
+        console.warn('[EditProfile] Class sheet sync warning:', err.message);
+      }
+    }
 
     await logAudit({
       action: 'EDIT_PROFILE',

@@ -327,6 +327,278 @@ async function updatePersonnelIndex(discordId, updates) {
   return true;
 }
 
+const RANK_CLASS_SHEETS = [
+  'Senior_Generals',
+  'Division_Commanders',
+  'Senior_Formation',
+  'Senior_Officers',
+  'Junior_Officers',
+  'Subordinate_Officers',
+  'Senior_NCOs',
+  'Junior_NCOs',
+  'Enlisted',
+];
+
+/**
+ * Synchronizes a member's record in the 9 Class tabs.
+ * If the member changes rank class, they are removed from other class tabs and appended to the new class tab.
+ * If they remain in the same class, their row is updated in-place.
+ */
+async function syncMemberClassSheet({ discordId, targetRank, targetData = null, oldClassHint = null }) {
+  if (!discordId || !targetRank) return;
+
+  const { getRankByName, getRankByLevel } = require('../../config');
+  let rankObj = targetRank;
+  if (typeof targetRank === 'string') {
+    rankObj = getRankByName(targetRank);
+  } else if (typeof targetRank === 'number') {
+    rankObj = getRankByLevel(targetRank);
+  }
+  if (!rankObj) return;
+
+  const targetClassSheet = rankObj.class || rankObj.sheet;
+  if (!RANK_CLASS_SHEETS.includes(targetClassSheet)) return;
+
+  // Fetch target data from Personnel_Index if not passed
+  let memberData = targetData;
+  if (!memberData || !memberData.Roblox_ID) {
+    memberData = await getMemberFromIndex(discordId);
+  }
+  if (!memberData) return;
+
+  const now = new Date().toISOString();
+  let foundInTargetSheet = false;
+
+  // Check all 9 class sheets for any existing rows for this member
+  for (const sheetName of RANK_CLASS_SHEETS) {
+    try {
+      const found = await findRowByDiscordId(sheetName, discordId);
+      if (found) {
+        if (sheetName === targetClassSheet) {
+          // Update in-place in the target sheet
+          const { row, rowIndex, headers } = found;
+          const rankIdx = headers.indexOf('Rank') !== -1 ? headers.indexOf('Rank') : headers.indexOf('Current_Rank');
+          if (rankIdx !== -1) row[rankIdx] = rankObj.name;
+          const levelIdx = headers.indexOf('Rank_Level');
+          if (levelIdx !== -1) row[levelIdx] = String(rankObj.level);
+          const promoIdx = headers.indexOf('Last_Promotion');
+          if (promoIdx !== -1) row[promoIdx] = now;
+          const updatedIdx = headers.indexOf('Last_Updated');
+          if (updatedIdx !== -1) row[updatedIdx] = now;
+
+          await updateRow(sheetName, rowIndex, row);
+          foundInTargetSheet = true;
+        } else {
+          // Stale entry in an old/wrong class sheet -> delete row
+          await deleteRow(sheetName, found.rowIndex);
+        }
+      }
+    } catch (err) {
+      console.warn(`[Sheets] Warning checking ${sheetName} for ${discordId}:`, err.message);
+    }
+  }
+
+  // If the member was not already in the target sheet, append them!
+  if (!foundInTargetSheet) {
+    try {
+      await ensureSheetExists(targetClassSheet);
+      const classRows = await readSheet(targetClassSheet);
+      const { headers } = findHeaderRow(classRows, 'discord');
+
+      const effectiveHeaders = headers.length > 0 ? headers : [
+        'Discord_ID', 'Roblox_ID', 'Roblox_Username', 'Rank', 'Rank_Level',
+        'Branch', 'Join_Date', 'Last_Promotion', 'Strike_Count', 'Total_Strikes',
+        'Status', 'LOA_Until', 'Notes'
+      ];
+
+      const newRow = new Array(effectiveHeaders.length).fill('');
+      const setCell = (colName, val) => {
+        const idx = effectiveHeaders.findIndex(h => h.toLowerCase() === colName.toLowerCase());
+        if (idx !== -1) newRow[idx] = String(val ?? '');
+      };
+
+      setCell('Discord_ID', discordId);
+      setCell('Roblox_ID', memberData.Roblox_ID || '');
+      setCell('Roblox_Username', memberData.Roblox_Username || '');
+      setCell('Rank', rankObj.name);
+      setCell('Current_Rank', rankObj.name);
+      setCell('Rank_Level', String(rankObj.level));
+      setCell('Branch', memberData.Regiment || memberData.Branch || 'Unassigned');
+      setCell('Regiment', memberData.Regiment || memberData.Branch || 'Unassigned');
+      setCell('Join_Date', memberData.Join_Date || now);
+      setCell('Last_Promotion', now);
+      setCell('Last_Updated', now);
+      setCell('Strike_Count', memberData.Strike_Count || '0');
+      setCell('Total_Strikes', memberData.Total_Strikes || memberData.Strike_Count || '0');
+      setCell('Status', memberData.Status || 'Active');
+      setCell('LOA_Until', memberData.LOA_Until || '');
+      setCell('Notes', memberData.Notes || '');
+
+      await appendRow(targetClassSheet, newRow);
+    } catch (err) {
+      console.error(`[Sheets] Error appending to class sheet ${targetClassSheet}:`, err.message);
+    }
+  }
+}
+
+/**
+ * Removes a member from all 9 class sheets (used on discharge, blacklist, or LWA)
+ */
+async function removeMemberFromClassSheets(discordId) {
+  if (!discordId) return;
+  for (const sheetName of RANK_CLASS_SHEETS) {
+    try {
+      const found = await findRowByDiscordId(sheetName, discordId);
+      if (found) {
+        await deleteRow(sheetName, found.rowIndex);
+      }
+    } catch (err) {
+      console.warn(`[Sheets] Warning removing ${discordId} from ${sheetName}:`, err.message);
+    }
+  }
+}
+
+/**
+ * Fully reconciles all members from Personnel_Index into their respective Class sheets.
+ */
+async function syncAllClassSheets() {
+  const { getRankByName, getRankByLevel } = require('../../config');
+  const indexRows = await readSheet('Personnel_Index');
+  if (indexRows.length === 0) return { synced: 0, moved: 0 };
+
+  const { headerIndex, headers } = findHeaderRow(indexRows, 'discord');
+  if (headerIndex === -1) return { synced: 0, moved: 0 };
+
+  const discordIdx = headers.indexOf('Discord_ID');
+  const robloxIdIdx = headers.indexOf('Roblox_ID');
+  const userIdx = headers.indexOf('Roblox_Username');
+  const rankIdx = headers.indexOf('Rank') !== -1 ? headers.indexOf('Rank') : headers.indexOf('Current_Rank');
+  const levelIdx = headers.indexOf('Rank_Level');
+  const regIdx = headers.indexOf('Regiment') !== -1 ? headers.indexOf('Regiment') : headers.indexOf('Branch');
+  const statusIdx = headers.indexOf('Status');
+  const joinIdx = headers.indexOf('Join_Date');
+  const strikeIdx = headers.indexOf('Strike_Count');
+
+  // Extract all active members from Personnel_Index
+  const members = [];
+  for (let i = headerIndex + 1; i < indexRows.length; i++) {
+    const r = indexRows[i];
+    if (!r || !r[discordIdx]) continue;
+    const discordId = String(r[discordIdx]).trim();
+    if (!discordId) continue;
+
+    const rankName = r[rankIdx] || '';
+    const rankLevel = parseInt(r[levelIdx] || '1', 10);
+    const rankObj = getRankByName(rankName) || getRankByLevel(rankLevel) || getRankByLevel(1);
+
+    members.push({
+      discordId,
+      robloxId: r[robloxIdIdx] || '',
+      robloxUsername: r[userIdx] || '',
+      rank: rankObj.name,
+      rankLevel: String(rankObj.level),
+      class: rankObj.class,
+      regiment: r[regIdx] || 'Unassigned',
+      status: r[statusIdx] || 'Active',
+      joinDate: r[joinIdx] || '',
+      strikeCount: r[strikeIdx] || '0',
+    });
+  }
+
+  let movedCount = 0;
+
+  // 1. Clean up stale / misplaced members from each class sheet
+  for (const classSheet of RANK_CLASS_SHEETS) {
+    try {
+      const sheetRows = await readSheet(classSheet);
+      const { headerIndex: classHdrIdx, headers: classHdrs } = findHeaderRow(sheetRows, 'discord');
+
+      if (classHdrIdx !== -1 && sheetRows.length > classHdrIdx + 1) {
+        let classDiscordIdx = classHdrs.indexOf('Discord_ID');
+        if (classDiscordIdx === -1) {
+          classDiscordIdx = classHdrs.findIndex(h => h.toLowerCase().includes('discord'));
+        }
+        if (classDiscordIdx !== -1) {
+          for (let j = sheetRows.length - 1; j > classHdrIdx; j--) {
+            const row = sheetRows[j];
+            if (!row || !row[classDiscordIdx]) continue;
+            const dId = String(row[classDiscordIdx]).trim();
+            const expectedMember = members.find(m => m.discordId === dId);
+
+            if (!expectedMember || expectedMember.class !== classSheet || expectedMember.status === 'Discharged') {
+              await deleteRow(classSheet, j + 1);
+              movedCount++;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[Sheets] Warning cleaning up ${classSheet}:`, err.message);
+    }
+  }
+
+  // 2. Ensure each active member is in their correct class sheet
+  for (const m of members) {
+    if (m.status === 'Discharged') continue;
+    try {
+      const found = await findRowByDiscordId(m.class, m.discordId);
+      if (!found) {
+        await ensureSheetExists(m.class);
+        const classRows = await readSheet(m.class);
+        const { headers: cHdrs } = findHeaderRow(classRows, 'discord');
+        const effHdrs = cHdrs.length > 0 ? cHdrs : [
+          'Discord_ID', 'Roblox_ID', 'Roblox_Username', 'Rank', 'Rank_Level',
+          'Branch', 'Join_Date', 'Last_Promotion', 'Strike_Count', 'Total_Strikes',
+          'Status', 'LOA_Until', 'Notes'
+        ];
+        const newRow = new Array(effHdrs.length).fill('');
+        const setCell = (colName, val) => {
+          const idx = effHdrs.findIndex(h => h.toLowerCase() === colName.toLowerCase());
+          if (idx !== -1) newRow[idx] = String(val ?? '');
+        };
+        setCell('Discord_ID', m.discordId);
+        setCell('Roblox_ID', m.robloxId);
+        setCell('Roblox_Username', m.robloxUsername);
+        setCell('Rank', m.rank);
+        setCell('Current_Rank', m.rank);
+        setCell('Rank_Level', m.rankLevel);
+        setCell('Branch', m.regiment);
+        setCell('Regiment', m.regiment);
+        setCell('Join_Date', m.joinDate || new Date().toISOString());
+        setCell('Last_Promotion', new Date().toISOString());
+        setCell('Last_Updated', new Date().toISOString());
+        setCell('Strike_Count', m.strikeCount);
+        setCell('Total_Strikes', m.strikeCount);
+        setCell('Status', m.status);
+
+        await appendRow(m.class, newRow);
+        movedCount++;
+      } else {
+        const { row, rowIndex, headers: cHdrs } = found;
+        const rankIdxInClass = cHdrs.indexOf('Rank') !== -1 ? cHdrs.indexOf('Rank') : cHdrs.indexOf('Current_Rank');
+        const levelIdxInClass = cHdrs.indexOf('Rank_Level');
+        let needsUpdate = false;
+        if (rankIdxInClass !== -1 && row[rankIdxInClass] !== m.rank) {
+          row[rankIdxInClass] = m.rank;
+          needsUpdate = true;
+        }
+        if (levelIdxInClass !== -1 && row[levelIdxInClass] !== m.rankLevel) {
+          row[levelIdxInClass] = m.rankLevel;
+          needsUpdate = true;
+        }
+        if (needsUpdate) {
+          await updateRow(m.class, rowIndex, row);
+          movedCount++;
+        }
+      }
+    } catch (err) {
+      console.warn(`[Sheets] Warning syncing member ${m.discordId} to ${m.class}:`, err.message);
+    }
+  }
+
+  return { synced: members.length, moved: movedCount };
+}
+
 /**
  * Directly executes a batchUpdate against the spreadsheet
  */
@@ -341,6 +613,7 @@ async function batchUpdateSpreadsheet(requests) {
 module.exports = {
   sheets,
   SPREADSHEET_ID,
+  RANK_CLASS_SHEETS,
   getSheetId,
   ensureSheetExists,
   readSheet,
@@ -352,5 +625,8 @@ module.exports = {
   findMemberByRoblox,
   getMemberFromIndex,
   updatePersonnelIndex,
+  syncMemberClassSheet,
+  removeMemberFromClassSheets,
+  syncAllClassSheets,
   batchUpdateSpreadsheet,
 };

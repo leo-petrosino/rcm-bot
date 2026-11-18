@@ -1,6 +1,6 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { getUserId, getUsername, getUserRankInGroup } = require('../utils/roblox');
-const { appendRow, findRowByDiscordId } = require('../utils/sheets');
+const { appendRow, findRowByDiscordId, syncMemberClassSheet } = require('../utils/sheets');
 const { getRankByLevel, getRankByName, ROBLOX_GROUP_ID } = require('../../config');
 const { RcmEmbed } = require('../utils/embeds');
 const { logAudit } = require('../utils/audit');
@@ -54,6 +54,24 @@ module.exports = {
         '0',          // Strike Count
         now,          // Last Updated
       ]);
+
+      // Sync into initial Rank Class Sheet (e.g. Enlisted)
+      await syncMemberClassSheet({
+        discordId,
+        targetRank: initialRank,
+        targetData: {
+          Roblox_ID: String(robloxId),
+          Roblox_Username: confirmedUsername,
+          Current_Rank: initialRank.name,
+          Rank_Level: String(initialRank.level),
+          Class: initialRank.class,
+          Regiment: 'Unassigned',
+          Status: 'Active',
+          Join_Date: now,
+          Strike_Count: '0',
+          Total_Strikes: '0',
+        },
+      });
 
       // Assign Discord Role if available
       try {

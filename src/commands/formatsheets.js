@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { formatEntireSpreadsheet } = require('../utils/sheetsFormat');
+const { syncAllClassSheets } = require('../utils/sheets');
 const { RcmEmbed } = require('../utils/embeds');
 
 module.exports = {
@@ -14,6 +15,7 @@ module.exports = {
 
     try {
       await formatEntireSpreadsheet();
+      const classSync = await syncAllClassSheets();
 
       const embed = RcmEmbed.success('SPREADSHEET STYLING & BLOCKS APPLIED')
         .setDescription(
@@ -25,7 +27,8 @@ module.exports = {
           { name: '🛡️ Regimental Formations', value: 'Dedicated block sections for GGHG, JTF2, CMTC, CFMP, and GGFG', inline: true },
           { name: '🎨 Conditional Formatting', value: 'Automatic soft-color tags for Active, LOA, Discharged, and LWA', inline: true },
           { name: '📌 Pinned Navigation', value: 'Frozen header rows and custom column pixel widths', inline: true },
-          { name: '📜 Audit & Disciplinary Tabs', value: 'Structured headers for Strike_Log, Audit_Log, Discharged, and Blacklist', inline: true }
+          { name: '📜 Audit & Disciplinary Tabs', value: 'Structured headers for Strike_Log, Audit_Log, Discharged, and Blacklist', inline: true },
+          { name: '📋 Class Rosters Synced', value: `\`${classSync.synced} Personnel Checked • ${classSync.moved} Moved/Adjusted\``, inline: true }
         );
 
       await interaction.editReply({ embeds: [embed] });

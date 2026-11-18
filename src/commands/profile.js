@@ -1,5 +1,5 @@
 const { SlashCommandBuilder } = require('discord.js');
-const { getMemberFromIndex, readSheet } = require('../utils/sheets');
+const { getMemberFromIndex, readSheet, findHeaderRow } = require('../utils/sheets');
 const { getRegimentById } = require('../../config');
 const { RcmEmbed } = require('../utils/embeds');
 
@@ -36,16 +36,17 @@ module.exports = {
     let recentActions = '• *No recent administrative entries*';
 
     if (auditRows.length > 1) {
-      const headers = auditRows[0];
-      const targetIdx = headers.indexOf('Target_Discord');
-      const actionIdx = headers.indexOf('Action');
-      const dateIdx = headers.indexOf('Timestamp');
+      const { headerIndex, headers } = findHeaderRow(auditRows, 'action');
+      if (headerIndex !== -1) {
+        const targetIdx = headers.indexOf('Target_Discord');
+        const actionIdx = headers.indexOf('Action');
+        const dateIdx = headers.indexOf('Timestamp');
 
-      const userAudits = auditRows
-        .slice(1)
-        .reverse()
-        .filter(r => r[targetIdx] === targetUser.id)
-        .slice(0, 3);
+        const userAudits = auditRows
+          .slice(headerIndex + 1)
+          .reverse()
+          .filter(r => r[targetIdx] === targetUser.id)
+          .slice(0, 3);
 
       if (userAudits.length > 0) {
         recentActions = userAudits
@@ -56,6 +57,7 @@ module.exports = {
           .join('\n');
       }
     }
+  }
 
     const strikes = parseInt(member.Strike_Count || '0', 10);
     const strikeDisplay = strikes === 0

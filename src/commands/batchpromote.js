@@ -1,6 +1,6 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { getRankByName, getRankByLevel } = require('../../config');
-const { getMemberFromIndex, updatePersonnelIndex } = require('../utils/sheets');
+const { getMemberFromIndex, updatePersonnelIndex, syncMemberClassSheet } = require('../utils/sheets');
 const { getMemberRank, canBatchPromote } = require('../utils/permissions');
 const { setRank } = require('../utils/roblox');
 const { logAudit } = require('../utils/audit');
@@ -133,6 +133,13 @@ module.exports = {
           Rank_Level: String(targetRank.level),
           Class: targetRank.class,
           Last_Updated: now,
+        });
+
+        await syncMemberClassSheet({
+          discordId: userId,
+          targetRank,
+          targetData,
+          oldClassHint: targetData.Class,
         });
 
         // Audit log

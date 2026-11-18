@@ -1,4 +1,4 @@
-const { getMemberFromIndex, appendRow, updatePersonnelIndex } = require('../utils/sheets');
+const { getMemberFromIndex, appendRow, updatePersonnelIndex, removeMemberFromClassSheets } = require('../utils/sheets');
 const { logAudit } = require('../utils/audit');
 const { GUILD_ID } = require('../../config');
 
@@ -37,11 +37,13 @@ module.exports = {
         'Departed Discord server without official discharge decree',
       ]);
 
-      // Update Personnel_Index
+      // Update Personnel_Index and remove from active class sheets
       await updatePersonnelIndex(member.id, {
         Status: 'LWA',
         Last_Updated: now,
       });
+
+      await removeMemberFromClassSheets(member.id);
 
       // Log Audit
       await logAudit({

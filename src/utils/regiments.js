@@ -1,5 +1,5 @@
 const { REGIMENTS, getRegimentById } = require('../../config');
-const { readSheet, appendRow, updateRow, getMemberFromIndex, updatePersonnelIndex } = require('./sheets');
+const { readSheet, appendRow, updateRow, getMemberFromIndex, updatePersonnelIndex, findRowByDiscordId } = require('./sheets');
 
 /**
  * Returns summary stats for all 5 regiments
@@ -47,6 +47,24 @@ async function assignMemberToRegiment({ discordId, regimentId, regimentalRole = 
     Last_Updated: now,
   });
 
+  // Update class sheet if present
+  if (member.Class) {
+    try {
+      const foundInClass = await findRowByDiscordId(member.Class, discordId);
+      if (foundInClass) {
+        const { row, rowIndex, headers } = foundInClass;
+        let col = headers.indexOf('Regiment');
+        if (col === -1) col = headers.indexOf('Branch');
+        if (col !== -1) {
+          row[col] = reg.id;
+          await updateRow(member.Class, rowIndex, row);
+        }
+      }
+    } catch (err) {
+      console.warn('[Regiments] Class sheet sync warning:', err.message);
+    }
+  }
+
   // Append entry in Regiments tab
   await appendRow('Regiments', [
     discordId,
@@ -76,6 +94,24 @@ async function removeMemberFromRegiment(discordId, reason = '') {
     Regiment: 'Unassigned',
     Last_Updated: now,
   });
+
+  // Update class sheet if present
+  if (member.Class) {
+    try {
+      const foundInClass = await findRowByDiscordId(member.Class, discordId);
+      if (foundInClass) {
+        const { row, rowIndex, headers } = foundInClass;
+        let col = headers.indexOf('Regiment');
+        if (col === -1) col = headers.indexOf('Branch');
+        if (col !== -1) {
+          row[col] = 'Unassigned';
+          await updateRow(member.Class, rowIndex, row);
+        }
+      }
+    } catch (err) {
+      console.warn('[Regiments] Class sheet sync warning:', err.message);
+    }
+  }
 
   return oldRegiment;
 }
