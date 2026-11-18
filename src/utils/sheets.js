@@ -84,12 +84,34 @@ async function readSheet(sheetName, range = 'A1:Z5000') {
 }
 
 /**
- * Appends a row of values to a sheet tab
+ * Appends a row of values to a sheet tab safely below all headers and existing data
  */
 async function appendRow(sheetName, values) {
-  return await sheets.spreadsheets.values.append({
+  const rows = await readSheet(sheetName);
+
+  // Find where the table header row is (if present)
+  const { headerIndex } = findHeaderRow(rows, 'discord');
+
+  // Find the last row with actual data
+  let lastDataRow = 0;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i] && rows[i].some(cell => String(cell || '').trim() !== '')) {
+      lastDataRow = i + 1;
+      break;
+    }
+  }
+
+  // Determine the next row index (1-based)
+  // Ensure it is strictly after the header row (headerIndex + 1 is 1-based header)
+  let nextRow = lastDataRow + 1;
+  if (headerIndex !== -1 && nextRow <= headerIndex + 1) {
+    nextRow = headerIndex + 2;
+  }
+  if (nextRow < 1) nextRow = 1;
+
+  return await sheets.spreadsheets.values.update({
     spreadsheetId: SPREADSHEET_ID,
-    range: `${sheetName}!A1`,
+    range: `${sheetName}!A${nextRow}`,
     valueInputOption: 'USER_ENTERED',
     resource: { values: [values] },
   });
@@ -142,6 +164,18 @@ function findHeaderRow(rows, identifier = 'discord') {
   for (let i = 0; i < Math.min(15, rows.length); i++) {
     const row = rows[i];
     if (row && row.some(cell => String(cell || '').toLowerCase().includes(target))) {
+      return {
+        headerIndex: i,
+        headers: row.map(c => String(c || '').trim()),
+      };
+    }
+  }
+
+  // Fallback: look for common header keywords in first 15 rows
+  const commonKeywords = ['roblox', 'user', 'rank', 'action', 'timestamp', 'date', 'name', 'id'];
+  for (let i = 0; i < Math.min(15, rows.length); i++) {
+    const row = rows[i];
+    if (row && row.some(cell => commonKeywords.some(kw => String(cell || '').toLowerCase().includes(kw)))) {
       return {
         headerIndex: i,
         headers: row.map(c => String(c || '').trim()),
