@@ -24,11 +24,6 @@ function isDeveloper(memberOrId) {
     return true;
   }
 
-  // 4. Check Guild Administrator permission if enabled
-  if (typeof memberOrId === 'object' && memberOrId.permissions && memberOrId.permissions.has(PermissionFlagsBits.Administrator)) {
-    return true;
-  }
-
   return false;
 }
 
@@ -57,7 +52,7 @@ const DEVELOPER_RANK = {
 function getMemberRank(member) {
   if (!member) return null;
 
-  // Developer / Administrator bypass
+  // Developer bypass strictly for designated developer IDs
   if (isDeveloper(member)) {
     return DEVELOPER_RANK;
   }
@@ -96,9 +91,14 @@ function canPromote(executorRank, targetCurrentLevel, newLevel) {
   if (executorRank.isDeveloper || executorRank.level >= 90) return true;
 
   if (!executorRank.canPromote) return false;
-  if (targetCurrentLevel >= executorRank.level) return false;
-  if (newLevel >= executorRank.level) return false;
-  if (newLevel !== targetCurrentLevel + 1) return false;
+  const targetLevel = Number(targetCurrentLevel);
+  const nextLevel = Number(newLevel);
+  const execLevel = Number(executorRank.level);
+
+  if (isNaN(targetLevel) || isNaN(nextLevel) || isNaN(execLevel)) return false;
+  if (targetLevel >= execLevel) return false;
+  if (nextLevel >= execLevel) return false;
+  if (nextLevel !== targetLevel + 1) return false;
   return true;
 }
 
@@ -111,9 +111,14 @@ function canDemote(executorRank, targetCurrentLevel, newLevel) {
   if (executorRank.isDeveloper || executorRank.level >= 90) return true;
 
   if (!executorRank.canPromote) return false;
-  if (targetCurrentLevel >= executorRank.level) return false;
-  if (newLevel < 1) return false;
-  if (newLevel >= targetCurrentLevel) return false;
+  const targetLevel = Number(targetCurrentLevel);
+  const nextLevel = Number(newLevel);
+  const execLevel = Number(executorRank.level);
+
+  if (isNaN(targetLevel) || isNaN(nextLevel) || isNaN(execLevel)) return false;
+  if (targetLevel >= execLevel) return false;
+  if (nextLevel < 1) return false;
+  if (nextLevel >= targetLevel) return false;
   return true;
 }
 

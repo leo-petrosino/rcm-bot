@@ -33,6 +33,13 @@ module.exports = {
       });
     }
 
+    // Prevent self-promotion unless designated developer
+    if (targetUser.id === interaction.user.id && !executorRank.isDeveloper) {
+      return interaction.editReply({
+        content: '❌ Self-promotion is strictly prohibited. You cannot promote yourself up the chain of command.',
+      });
+    }
+
     const targetData = await getMemberFromIndex(targetUser.id);
     if (!targetData) {
       return interaction.editReply({

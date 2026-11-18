@@ -31,6 +31,12 @@ module.exports = {
     const executorMember = await interaction.guild.members.fetch(interaction.user.id);
     const executorRank = getMemberRank(executorMember);
 
+    if (targetUser.id === interaction.user.id && !executorRank.isDeveloper) {
+      return interaction.editReply({
+        content: '❌ Self-pardons are prohibited. Only an independent superior officer may pardon disciplinary records.',
+      });
+    }
+
     const targetData = await getMemberFromIndex(targetUser.id);
     if (!targetData) {
       return interaction.editReply({ content: '❌ Target is not indexed in the personnel database.' });

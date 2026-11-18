@@ -49,6 +49,12 @@ module.exports = {
       });
     }
 
+    if (targetUser.id === interaction.user.id && !executorRank.isDeveloper) {
+      return interaction.editReply({
+        content: '❌ You cannot issue a disciplinary strike against yourself.',
+      });
+    }
+
     const targetData = await getMemberFromIndex(targetUser.id);
     if (!targetData) {
       return interaction.editReply({ content: '❌ Target is not indexed in the personnel database.' });

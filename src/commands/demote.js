@@ -31,12 +31,32 @@ module.exports = {
       return interaction.editReply({ content: '❌ You do not hold an authorized rank.' });
     }
 
+    // Prevent self-demotion unless designated developer
+    if (targetUser.id === interaction.user.id && !executorRank.isDeveloper) {
+      return interaction.editReply({
+        content: '❌ Self-demotion is not permitted. Please consult High Command or submit a resignation request.',
+      });
+    }
+
     const targetData = await getMemberFromIndex(targetUser.id);
     if (!targetData) {
       return interaction.editReply({ content: '❌ Target is not indexed in the database.' });
     }
 
-    const currentLevel = parseInt(targetData.Rank_Level, 10);
+    // Fetch target member's Discord role rank to check against real-time server permissions
+    let targetDiscordRank = null;
+    let targetMember = null;
+    try {
+      targetMember = await interaction.guild.members.fetch(targetUser.id);
+      targetDiscordRank = getMemberRank(targetMember);
+    } catch {
+      console.warn('[Demote] Could not fetch target Discord GuildMember');
+    }
+
+    const sheetLevel = parseInt(targetData.Rank_Level, 10) || 1;
+    const discordLevel = targetDiscordRank ? targetDiscordRank.level : 1;
+    const currentLevel = Math.max(sheetLevel, discordLevel);
+
     const newRank = getPreviousRank(currentLevel);
 
     if (!newRank) {
@@ -47,7 +67,7 @@ module.exports = {
 
     if (!canDemote(executorRank, currentLevel, newRank.level)) {
       return interaction.editReply({
-        content: `❌ You do not have authority to demote personnel from **${targetData.Current_Rank}** to **${newRank.name}**.`,
+        content: `❌ You do not have authority to demote personnel with rank **${targetData.Current_Rank}** (Level ${currentLevel}). You cannot demote equals or superiors.`,
       });
     }
 
@@ -65,7 +85,7 @@ module.exports = {
 
     // 2. Discord Role Change
     try {
-      const targetMember = await interaction.guild.members.fetch(targetUser.id);
+      if (!targetMember) targetMember = await interaction.guild.members.fetch(targetUser.id);
       const oldRank = getRankByLevel(currentLevel);
       if (oldRank?.roleId && targetMember.roles.cache.has(oldRank.roleId)) {
         await targetMember.roles.remove(oldRank.roleId);

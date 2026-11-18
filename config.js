@@ -4,37 +4,32 @@
  * theme palettes, and system constants.
  */
 
-const RANKS = [
-  // Senior Generals
+let loadedRanks;
+try {
+  loadedRanks = require('./ranks.json');
+} catch {
+  loadedRanks = null;
+}
+
+const RANKS = Array.isArray(loadedRanks) && loadedRanks.length > 0 ? loadedRanks : [
+  // Fallback defaults
   { level: 19, name: 'General Chief of the Defence Staff', abbr: 'GEN CDS', class: 'Senior_Generals', sheet: 'Senior_Generals', canPromote: true, canStrike: true, canDischarge: true, canEditProfile: true, canBatchPromote: true, canAudit: true, canBlacklist: true, canManageRegiment: true },
   { level: 18, name: 'Lieutenant General', abbr: 'LTG', class: 'Senior_Generals', sheet: 'Senior_Generals', canPromote: true, canStrike: true, canDischarge: true, canEditProfile: true, canBatchPromote: true, canAudit: true, canBlacklist: true, canManageRegiment: true },
   { level: 17, name: 'Major General Division Commander', abbr: 'MGEN', class: 'Division_Commanders', sheet: 'Division_Commanders', canPromote: true, canStrike: true, canDischarge: true, canEditProfile: true, canBatchPromote: true, canAudit: true, canBlacklist: true, canManageRegiment: true },
-  
-  // Senior Officers / Senior Formation
   { level: 16, name: 'Brigadier General', abbr: 'BGEN', class: 'Senior_Formation', sheet: 'Senior_Formation', canPromote: true, canStrike: true, canDischarge: true, canEditProfile: true, canBatchPromote: true, canAudit: true, canBlacklist: true, canManageRegiment: true },
   { level: 15, name: 'Colonel', abbr: 'COL', class: 'Senior_Formation', sheet: 'Senior_Formation', canPromote: true, canStrike: true, canDischarge: true, canEditProfile: true, canBatchPromote: true, canAudit: true, canBlacklist: true, canManageRegiment: true },
   { level: 14, name: 'Lieutenant Colonel', abbr: 'LTCOL', class: 'Senior_Officers', sheet: 'Senior_Officers', canPromote: true, canStrike: true, canDischarge: true, canEditProfile: true, canBatchPromote: true, canAudit: true, canBlacklist: true, canManageRegiment: true },
   { level: 13, name: 'Major', abbr: 'MAJ', class: 'Senior_Officers', sheet: 'Senior_Officers', canPromote: true, canStrike: true, canDischarge: true, canEditProfile: true, canBatchPromote: true, canAudit: true, canBlacklist: false, canManageRegiment: true },
-  
-  // Junior Officers
   { level: 12, name: 'Captain', abbr: 'CPT', class: 'Junior_Officers', sheet: 'Junior_Officers', canPromote: true, canStrike: true, canDischarge: true, canEditProfile: false, canBatchPromote: true, canAudit: true, canBlacklist: false, canManageRegiment: true },
   { level: 11, name: 'Lieutenant', abbr: 'LT', class: 'Junior_Officers', sheet: 'Junior_Officers', canPromote: true, canStrike: false, canDischarge: false, canEditProfile: false, canBatchPromote: false, canAudit: true, canBlacklist: false, canManageRegiment: false },
   { level: 10, name: 'Second Lieutenant', abbr: '2LT', class: 'Junior_Officers', sheet: 'Junior_Officers', canPromote: true, canStrike: false, canDischarge: false, canEditProfile: false, canBatchPromote: false, canAudit: true, canBlacklist: false, canManageRegiment: false },
-  
-  // Subordinate Officers
   { level: 9, name: 'Officer Cadet', abbr: 'OCdt', class: 'Subordinate_Officers', sheet: 'Subordinate_Officers', canPromote: true, canStrike: false, canDischarge: false, canEditProfile: false, canBatchPromote: false, canAudit: true, canBlacklist: false, canManageRegiment: false },
-  
-  // Senior NCOs
   { level: 8, name: 'Chief Warrant Officer', abbr: 'CWO', class: 'Senior_NCOs', sheet: 'Senior_NCOs', canPromote: false, canStrike: false, canDischarge: false, canEditProfile: false, canBatchPromote: false, canAudit: true, canBlacklist: false, canManageRegiment: false },
   { level: 7, name: 'Master Warrant Officer', abbr: 'MWO', class: 'Senior_NCOs', sheet: 'Senior_NCOs', canPromote: false, canStrike: false, canDischarge: false, canEditProfile: false, canBatchPromote: false, canAudit: true, canBlacklist: false, canManageRegiment: false },
   { level: 6, name: 'Warrant Officer', abbr: 'WO', class: 'Senior_NCOs', sheet: 'Senior_NCOs', canPromote: false, canStrike: false, canDischarge: false, canEditProfile: false, canBatchPromote: false, canAudit: true, canBlacklist: false, canManageRegiment: false },
   { level: 5, name: 'Sergeant', abbr: 'SGT', class: 'Senior_NCOs', sheet: 'Senior_NCOs', canPromote: false, canStrike: false, canDischarge: false, canEditProfile: false, canBatchPromote: false, canAudit: true, canBlacklist: false, canManageRegiment: false },
-  
-  // Junior NCOs
   { level: 4, name: 'Master Corporal', abbr: 'MCpl', class: 'Junior_NCOs', sheet: 'Junior_NCOs', canPromote: false, canStrike: false, canDischarge: false, canEditProfile: false, canBatchPromote: false, canAudit: false, canBlacklist: false, canManageRegiment: false },
   { level: 3, name: 'Corporal', abbr: 'Cpl', class: 'Junior_NCOs', sheet: 'Junior_NCOs', canPromote: false, canStrike: false, canDischarge: false, canEditProfile: false, canBatchPromote: false, canAudit: false, canBlacklist: false, canManageRegiment: false },
-  
-  // Enlisted
   { level: 2, name: 'Private', abbr: 'Pte', class: 'Enlisted', sheet: 'Enlisted', canPromote: false, canStrike: false, canDischarge: false, canEditProfile: false, canBatchPromote: false, canAudit: false, canBlacklist: false, canManageRegiment: false },
   { level: 1, name: 'Cadet', abbr: 'Cdt', class: 'Enlisted', sheet: 'Enlisted', canPromote: false, canStrike: false, canDischarge: false, canEditProfile: false, canBatchPromote: false, canAudit: false, canBlacklist: false, canManageRegiment: false },
 ];
@@ -149,6 +144,14 @@ function getRegimentById(id) {
   );
 }
 
+function formatMilitaryNickname(abbr, username) {
+  if (!username) return '';
+  const prefix = abbr ? `[${abbr}] ` : '';
+  const fullName = `${prefix}${username}`;
+  // Discord nickname max limit is 32 characters
+  return fullName.slice(0, 32);
+}
+
 module.exports = {
   RANKS,
   REGIMENTS,
@@ -162,4 +165,5 @@ module.exports = {
   getNextRank,
   getPreviousRank,
   getRegimentById,
+  formatMilitaryNickname,
 };

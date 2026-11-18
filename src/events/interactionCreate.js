@@ -17,7 +17,29 @@ module.exports = {
       return;
     }
 
-    // 2. Handle Chat Slash Commands
+    // 2. Handle Button Interactions (e.g. Verification Dashboard)
+    if (interaction.isButton()) {
+      if (interaction.customId === 'btn_verify_roblox') {
+        const { handleVerification } = require('../utils/verification');
+        try {
+          await handleVerification(interaction);
+        } catch (err) {
+          console.error('[Button Error] btn_verify_roblox:', err);
+          const reply = {
+            content: '❌ An error occurred while processing your verification.',
+            ephemeral: true,
+          };
+          if (interaction.deferred || interaction.replied) {
+            await interaction.editReply(reply).catch(() => {});
+          } else {
+            await interaction.reply(reply).catch(() => {});
+          }
+        }
+      }
+      return;
+    }
+
+    // 3. Handle Chat Slash Commands
     if (!interaction.isChatInputCommand()) return;
 
     const command = client.commands.get(interaction.commandName);

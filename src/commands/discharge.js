@@ -43,6 +43,13 @@ module.exports = {
     const executorMember = await interaction.guild.members.fetch(interaction.user.id);
     const executorRank = getMemberRank(executorMember);
 
+    if (targetUser.id === interaction.user.id && !executorRank.isDeveloper) {
+      return interaction.reply({
+        content: '❌ You cannot discharge yourself. If you wish to resign, submit a formal separation request to High Command.',
+        ephemeral: true,
+      });
+    }
+
     const targetData = await getMemberFromIndex(targetUser.id);
     if (!targetData) {
       return interaction.reply({ content: '❌ Target is not indexed in the database.', ephemeral: true });
