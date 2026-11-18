@@ -2,13 +2,67 @@ const { RUNTIME_CACHE, getRankByLevel, getRankByName } = require('../../config')
 const { PermissionFlagsBits } = require('discord.js');
 
 /**
+ * Checks if a member or Discord ID is designated as an authorized developer
+ */
+function isDeveloper(memberOrId) {
+  if (!memberOrId) return false;
+  const id = typeof memberOrId === 'string' ? memberOrId : memberOrId.id;
+
+  // 1. Check DEVELOPER_IDS in env (comma-separated list of Discord IDs)
+  const devIds = (process.env.DEVELOPER_IDS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (devIds.includes(id)) return true;
+
+  // 2. Check DEVELOPER_ID or OWNER_ID
+  if (process.env.DEVELOPER_ID && process.env.DEVELOPER_ID.trim() === id) return true;
+  if (process.env.OWNER_ID && process.env.OWNER_ID.trim() === id) return true;
+
+  // 3. Check Discord Server Owner
+  if (typeof memberOrId === 'object' && memberOrId.guild && memberOrId.guild.ownerId === id) {
+    return true;
+  }
+
+  // 4. Check Guild Administrator permission if enabled
+  if (typeof memberOrId === 'object' && memberOrId.permissions && memberOrId.permissions.has(PermissionFlagsBits.Administrator)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Virtual rank granted to developers for supreme command authority
+ */
+const DEVELOPER_RANK = {
+  level: 99,
+  name: 'Developer / Supreme Command',
+  abbr: 'DEV',
+  class: 'Developer',
+  canPromote: true,
+  canStrike: true,
+  canDischarge: true,
+  canEditProfile: true,
+  canBatchPromote: true,
+  canAudit: true,
+  canBlacklist: true,
+  canManageRegiment: true,
+  isDeveloper: true,
+};
+
+/**
  * Resolves a Discord GuildMember's current highest recognized CAF rank
  */
 function getMemberRank(member) {
-  if (!member || !member.roles) return null;
+  if (!member) return null;
 
-  // Check if member is a guild administrator (can bypass or act as highest rank)
-  const isAdmin = member.permissions && member.permissions.has(PermissionFlagsBits.Administrator);
+  // Developer / Administrator bypass
+  if (isDeveloper(member)) {
+    return DEVELOPER_RANK;
+  }
+
+  if (!member.roles) return null;
 
   // Scan from highest level (19) down to level 1
   for (let level = 19; level >= 1; level--) {
@@ -30,11 +84,6 @@ function getMemberRank(member) {
     }
   }
 
-  // If guild admin has no specific rank role, default to Level 19 authority
-  if (isAdmin) {
-    return getRankByLevel(19);
-  }
-
   return null;
 }
 
@@ -42,11 +91,13 @@ function getMemberRank(member) {
  * Checks if executor can promote target to new rank level
  */
 function canPromote(executorRank, targetCurrentLevel, newLevel) {
-  if (!executorRank || !executorRank.canPromote) return false;
-  // Promoters cannot promote anyone to or above their own rank
+  if (!executorRank) return false;
+  // Developer override
+  if (executorRank.isDeveloper || executorRank.level >= 90) return true;
+
+  if (!executorRank.canPromote) return false;
   if (targetCurrentLevel >= executorRank.level) return false;
   if (newLevel >= executorRank.level) return false;
-  // Standard promotion is exactly +1 level
   if (newLevel !== targetCurrentLevel + 1) return false;
   return true;
 }
@@ -55,7 +106,11 @@ function canPromote(executorRank, targetCurrentLevel, newLevel) {
  * Checks if executor can demote target
  */
 function canDemote(executorRank, targetCurrentLevel, newLevel) {
-  if (!executorRank || !executorRank.canPromote) return false;
+  if (!executorRank) return false;
+  // Developer override
+  if (executorRank.isDeveloper || executorRank.level >= 90) return true;
+
+  if (!executorRank.canPromote) return false;
   if (targetCurrentLevel >= executorRank.level) return false;
   if (newLevel < 1) return false;
   if (newLevel >= targetCurrentLevel) return false;
@@ -63,74 +118,92 @@ function canDemote(executorRank, targetCurrentLevel, newLevel) {
 }
 
 /**
- * Checks direct rank setting authority (Major+ or Admin)
+ * Checks direct rank setting authority (Major+ or Developer)
  */
 function canSetRank(executorRank, newLevel) {
   if (!executorRank) return false;
+  if (executorRank.isDeveloper || executorRank.level >= 90) return true;
+
   if (executorRank.level < 13) return false; // Major+
   if (newLevel >= executorRank.level) return false;
   return true;
 }
 
 /**
- * Checks strike authority (Captain+)
+ * Checks strike authority (Captain+ or Developer)
  */
 function canStrike(executorRank) {
-  return Boolean(executorRank && executorRank.canStrike);
+  if (!executorRank) return false;
+  if (executorRank.isDeveloper || executorRank.level >= 90) return true;
+  return Boolean(executorRank.canStrike);
 }
 
 /**
- * Checks pardon authority (Equal or higher rank than issuer)
+ * Checks pardon authority (Equal or higher rank than issuer, or Developer)
  */
 function canPardon(executorRank, issuerRankLevel) {
   if (!executorRank) return false;
+  if (executorRank.isDeveloper || executorRank.level >= 90) return true;
   return executorRank.level >= (issuerRankLevel || 1);
 }
 
 /**
- * Checks discharge authority (Captain+)
+ * Checks discharge authority (Captain+ or Developer)
  */
 function canDischarge(executorRank, targetCurrentLevel) {
-  if (!executorRank || !executorRank.canDischarge) return false;
+  if (!executorRank) return false;
+  if (executorRank.isDeveloper || executorRank.level >= 90) return true;
+  if (!executorRank.canDischarge) return false;
   return targetCurrentLevel < executorRank.level;
 }
 
 /**
- * Checks profile edit authority (Major+)
+ * Checks profile edit authority (Major+ or Developer)
  */
 function canEditProfile(executorRank) {
-  return Boolean(executorRank && executorRank.canEditProfile);
+  if (!executorRank) return false;
+  if (executorRank.isDeveloper || executorRank.level >= 90) return true;
+  return Boolean(executorRank.canEditProfile);
 }
 
 /**
- * Checks batch promote authority (Captain+)
+ * Checks batch promote authority (Captain+ or Developer)
  */
 function canBatchPromote(executorRank) {
-  return Boolean(executorRank && executorRank.canBatchPromote);
+  if (!executorRank) return false;
+  if (executorRank.isDeveloper || executorRank.level >= 90) return true;
+  return Boolean(executorRank.canBatchPromote);
 }
 
 /**
- * Checks audit log view authority (Sergeant+)
+ * Checks audit log view authority (Sergeant+ or Developer)
  */
 function canAudit(executorRank) {
-  return Boolean(executorRank && executorRank.canAudit);
+  if (!executorRank) return false;
+  if (executorRank.isDeveloper || executorRank.level >= 90) return true;
+  return Boolean(executorRank.canAudit);
 }
 
 /**
- * Checks regiment management authority (Captain+)
+ * Checks regiment management authority (Captain+ or Developer)
  */
 function canManageRegiment(executorRank) {
-  return Boolean(executorRank && executorRank.canManageRegiment);
+  if (!executorRank) return false;
+  if (executorRank.isDeveloper || executorRank.level >= 90) return true;
+  return Boolean(executorRank.canManageRegiment);
 }
 
 /**
- * Checks community blacklist authority (Colonel+)
+ * Checks community blacklist authority (Colonel+ or Developer)
  */
 function canBlacklist(executorRank) {
-  return Boolean(executorRank && (executorRank.canBlacklist || executorRank.level >= 15));
+  if (!executorRank) return false;
+  if (executorRank.isDeveloper || executorRank.level >= 90) return true;
+  return Boolean(executorRank.canBlacklist || executorRank.level >= 15);
 }
 
 module.exports = {
+  isDeveloper,
   getMemberRank,
   canPromote,
   canDemote,

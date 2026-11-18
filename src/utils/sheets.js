@@ -57,7 +57,6 @@ async function ensureSheetExists(sheetName, defaultHeaders = []) {
           ],
         },
       });
-      // Clear cache so next lookup sees it
       sheetIdCache.clear();
       if (defaultHeaders.length > 0) {
         await appendRow(sheetName, defaultHeaders);
@@ -133,18 +132,57 @@ async function deleteRow(sheetName, rowIndex) {
 }
 
 /**
- * Searches for a member by Discord ID across Personnel_Index
+ * Dynamically finds the table header row in a sheet (even if banners or KPI rows precede it)
+ */
+function findHeaderRow(rows, identifier = 'discord') {
+  if (!rows || rows.length === 0) return { headerIndex: -1, headers: [] };
+  const target = identifier.toLowerCase();
+
+  // Search first 15 rows for the header containing target (e.g. 'discord')
+  for (let i = 0; i < Math.min(15, rows.length); i++) {
+    const row = rows[i];
+    if (row && row.some(cell => String(cell || '').toLowerCase().includes(target))) {
+      return {
+        headerIndex: i,
+        headers: row.map(c => String(c || '').trim()),
+      };
+    }
+  }
+
+  // Fallback to row 0 if not explicitly detected
+  return {
+    headerIndex: 0,
+    headers: (rows[0] || []).map(c => String(c || '').trim()),
+  };
+}
+
+/**
+ * Searches for a member by Discord ID across a specific sheet tab
  */
 async function findRowByDiscordId(sheetName, discordId) {
   const rows = await readSheet(sheetName);
   if (rows.length === 0) return null;
-  const headers = rows[0];
-  const discordIdIndex = headers.indexOf('Discord_ID');
+
+  const { headerIndex, headers } = findHeaderRow(rows, 'discord');
+  if (headerIndex === -1) return null;
+
+  let discordIdIndex = headers.indexOf('Discord_ID');
+  if (discordIdIndex === -1) {
+    discordIdIndex = headers.findIndex(h => h.toLowerCase().includes('discord'));
+  }
   if (discordIdIndex === -1) return null;
 
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i][discordIdIndex] === discordId) {
-      return { row: rows[i], rowIndex: i + 1, headers };
+  const targetClean = String(discordId).trim();
+
+  for (let i = headerIndex + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (row && String(row[discordIdIndex] || '').trim() === targetClean) {
+      return {
+        row,
+        rowIndex: i + 1, // 1-based sheet row index
+        headers,
+        headerRowIndex: headerIndex + 1,
+      };
     }
   }
   return null;
@@ -155,18 +193,21 @@ async function findRowByDiscordId(sheetName, discordId) {
  */
 async function findMemberByRoblox(robloxIdOrUsername) {
   const rows = await readSheet('Personnel_Index');
-  if (rows.length <= 1) return null;
-  const headers = rows[0];
+  if (rows.length === 0) return null;
+
+  const { headerIndex, headers } = findHeaderRow(rows, 'discord');
+  if (headerIndex === -1) return null;
+
   const robloxIdIdx = headers.indexOf('Roblox_ID');
   const robloxUserIdx = headers.indexOf('Roblox_Username');
 
   const query = String(robloxIdOrUsername).trim().toLowerCase();
 
-  for (let i = 1; i < rows.length; i++) {
+  for (let i = headerIndex + 1; i < rows.length; i++) {
     const row = rows[i];
     if (
-      (robloxIdIdx !== -1 && row[robloxIdIdx] === query) ||
-      (robloxUserIdx !== -1 && (row[robloxUserIdx] || '').toLowerCase() === query)
+      (robloxIdIdx !== -1 && String(row[robloxIdIdx] || '').trim().toLowerCase() === query) ||
+      (robloxUserIdx !== -1 && String(row[robloxUserIdx] || '').trim().toLowerCase() === query)
     ) {
       const obj = {};
       headers.forEach((h, idx) => (obj[h] = row[idx] || ''));
@@ -178,14 +219,53 @@ async function findMemberByRoblox(robloxIdOrUsername) {
 }
 
 /**
- * Fetches structured member object from Personnel_Index
+ * Primary rank class sheets used as fallbacks if a member is not in Personnel_Index
+ */
+const CLASS_SHEETS = [
+  'Enlisted',
+  'Junior_NCOs',
+  'Senior_NCOs',
+  'Subordinate_Officers',
+  'Junior_Officers',
+  'Senior_Officers',
+  'Senior_Formation',
+  'Division_Commanders',
+  'Senior_Generals',
+  'LWA',
+  'Discharged',
+];
+
+/**
+ * Fetches structured member object by Discord ID, with cross-tab fallback
  */
 async function getMemberFromIndex(discordId) {
-  const result = await findRowByDiscordId('Personnel_Index', discordId);
+  // 1. Try Personnel_Index first
+  let result = await findRowByDiscordId('Personnel_Index', discordId);
+
+  // 2. Fallback: Search across class tabs if not present in Personnel_Index
+  if (!result) {
+    for (const sheetName of CLASS_SHEETS) {
+      result = await findRowByDiscordId(sheetName, discordId);
+      if (result) break;
+    }
+  }
+
   if (!result) return null;
+
   const obj = {};
   result.headers.forEach((h, i) => (obj[h] = result.row[i] || ''));
   obj._rowIndex = result.rowIndex;
+
+  // Normalize field names across old and new sheets
+  obj.Current_Rank = obj.Current_Rank || obj.Rank || 'Cadet';
+  obj.Rank = obj.Current_Rank;
+  obj.Rank_Level = String(obj.Rank_Level || '1');
+  obj.Class = obj.Class || obj.Branch || 'Enlisted';
+  obj.Regiment = obj.Regiment || obj.Branch || 'Unassigned';
+  obj.Status = obj.Status || 'Active';
+  obj.Strike_Count = obj.Strike_Count || '0';
+  obj.Total_Strikes = obj.Total_Strikes || obj.Strike_Count || '0';
+
   return obj;
 }
 
@@ -201,6 +281,12 @@ async function updatePersonnelIndex(discordId, updates) {
     let idx = headers.indexOf(key);
     if (idx !== -1) {
       row[idx] = value;
+    } else {
+      // Check alternative keys (e.g. Rank vs Current_Rank)
+      if (key === 'Current_Rank') {
+        const altIdx = headers.indexOf('Rank');
+        if (altIdx !== -1) row[altIdx] = value;
+      }
     }
   }
   await updateRow('Personnel_Index', rowIndex, row);
@@ -227,6 +313,7 @@ module.exports = {
   appendRow,
   updateRow,
   deleteRow,
+  findHeaderRow,
   findRowByDiscordId,
   findMemberByRoblox,
   getMemberFromIndex,
